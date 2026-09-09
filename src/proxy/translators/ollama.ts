@@ -60,29 +60,3 @@ export function getOllamaApiUrl(baseUrl: string): string {
 
   return url;
 }
-
-/**
- * Translate raw Ollama errors into user-friendly messages.
- */
-export function translateOllamaError(statusCode: number, body: string): string {
-  // Connection refused — Ollama service not running
-  if (body.includes('ECONNREFUSED') || body.includes('connect ECONNREFUSED')) {
-    return 'Ollama is not running. Start it with `ollama serve` or launch the Ollama desktop app.';
-  }
-
-  // Model not pulled yet
-  if (statusCode === 404 || (body.includes('model') && body.includes('not found'))) {
-    const modelMatch = body.match(/model ['"]([^'"]+)['"]/);
-    const modelName = modelMatch ? modelMatch[1] : 'unknown';
-    return `Ollama model "${modelName}" not found. Pull it: ollama pull ${modelName}`;
-  }
-
-  // Server-side errors (OOM, crash, etc.)
-  if (statusCode >= 500) {
-    return `Ollama server error (${statusCode}). Check if Ollama has enough resources (RAM/VRAM).`;
-  }
-
-  // Generic fallback with truncated body
-  const snippet = body.substring(0, 200);
-  return `Ollama error (${statusCode}): ${snippet}`;
-}

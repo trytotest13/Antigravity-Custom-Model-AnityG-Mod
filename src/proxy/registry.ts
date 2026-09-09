@@ -1,16 +1,18 @@
 /**
  * Provider Translator Registry.
- * Auto-discovers translator modules and provides a unified interface for request/response mapping.
+ * Static map of translator modules with a unified interface for request/response mapping.
  *
  * To add a new provider:
  *   1. Create a file in ./translators/ named <provider>.ts
  *   2. Export: mapGeminiTo<Provider>, map<Provider>ToGemini, map<Provider>ChunkToGemini
- *   3. The registry detects it automatically — no config changes needed.
+ *   3. Register it in `translators` below + `providerFamily`.
  */
 
-import * as path from 'path';
-import * as fs from 'fs';
 import log from 'electron-log';
+import * as openai from './translators/openai';
+import * as anthropic from './translators/anthropic';
+import * as google from './translators/google';
+import * as ollama from './translators/ollama';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -41,55 +43,64 @@ export interface ProviderHeaders {
 
 // ─── Registry State ───────────────────────────────────────────────────────
 
-const translators = new Map<string, TranslatorModule>();
+const translators = new Map<string, TranslatorModule>([
+  ['openai', openai as unknown as TranslatorModule],
+  ['ollama', ollama as unknown as TranslatorModule],
+  ['anthropic', anthropic as unknown as TranslatorModule],
+  ['google', google as unknown as TranslatorModule],
+]);
 
-// ─── Auto-Discovery ───────────────────────────────────────────────────────
+// Single source of truth for transport compatibility.
+export type ProviderFamily = 'openai' | 'anthropic' | 'google' | 'unknown';
 
-function loadTranslators(): void {
-  const translatorDir = path.join(__dirname, 'translators');
-
-  try {
-    const files = fs.readdirSync(translatorDir).filter((f) => f.endsWith('.js') && f !== 'utils.js');
-
-    for (const file of files) {
-      const provider = path.basename(file, '.js');
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const mod = require(path.join(translatorDir, file)) as TranslatorModule;
-        translators.set(provider, mod);
-        log.info(`[TranslatorRegistry] Loaded provider translator: "${provider}"`);
-      } catch (err) {
-        log.error(`[TranslatorRegistry] Failed to load translator "${provider}":`, (err as Error).message);
-      }
-    }
-  } catch (err) {
-    log.error('[TranslatorRegistry] Failed to scan translators directory:', (err as Error).message);
+export function providerFamily(provider: string): ProviderFamily {
+  switch (provider) {
+    case 'openai':
+    case 'ollama':
+    case 'openrouter':
+    case 'custom':
+    case 'groq':
+    case 'mistral':
+    case 'cerebras':
+    case 'nvidia':
+    case 'opencode':
+    case 'codestral':
+      return 'openai';
+    case 'anthropic':
+    case 'deepseek':
+    case 'kimi':
+    case 'fireworks':
+    case 'lmstudio':
+    case 'llamacpp':
+    case 'wafer':
+    case 'zai':
+      return 'anthropic';
+    case 'google':
+      return 'google';
+    default:
+      return 'unknown';
   }
-
-  log.info(
-    `[TranslatorRegistry] ${translators.size} provider translator(s) loaded: ${[...translators.keys()].join(', ')}`,
-  );
 }
-
-// Providers grouped by transport compatibility
-const OPENAI_COMPAT = new Set(['openai', 'ollama', 'openrouter', 'custom', 'groq', 'mistral', 'cerebras', 'nvidia', 'opencode', 'codestral']);
-const ANTHROPIC_COMPAT = new Set(['anthropic', 'deepseek', 'kimi', 'fireworks', 'lmstudio', 'llamacpp', 'wafer', 'zai']);
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
 export function getTranslator(provider: string): TranslatorModule | null {
-  if (OPENAI_COMPAT.has(provider)) return translators.get('openai') || null;
-  if (ANTHROPIC_COMPAT.has(provider)) return translators.get('anthropic') || null;
-  if (provider === 'google') return translators.get('google') || null;
+  if (provider === 'ollama') return translators.get('ollama') || null;
+  const family = providerFamily(provider);
+  if (family === 'openai') return translators.get('openai') || null;
+  if (family === 'anthropic') return translators.get('anthropic') || null;
+  if (family === 'google') return translators.get('google') || null;
   return translators.get('openai') || null;
 }
 
 export function translateRequest(provider: string, geminiBody: unknown, modelName: string): unknown {
   const t = getTranslator(provider);
+  const family = providerFamily(provider);
 
-  if (provider === 'google') return geminiBody;
-  if (OPENAI_COMPAT.has(provider)) return t?.mapGeminiToOpenAI ? t.mapGeminiToOpenAI(geminiBody, modelName) : geminiBody;
-  if (ANTHROPIC_COMPAT.has(provider)) return t?.mapGeminiToAnthropic ? t.mapGeminiToAnthropic(geminiBody, modelName) : geminiBody;
+  if (family === 'google') return geminiBody;
+  if (family === 'openai') return t?.mapGeminiToOpenAI ? t.mapGeminiToOpenAI(geminiBody, modelName) : geminiBody;
+  if (family === 'anthropic')
+    return t?.mapGeminiToAnthropic ? t.mapGeminiToAnthropic(geminiBody, modelName) : geminiBody;
 
   // Generic: try mapGeminiTo<Provider> convention
   const fnName = `mapGeminiTo${provider.charAt(0).toUpperCase() + provider.slice(1)}`;
@@ -103,10 +114,12 @@ export function translateRequest(provider: string, geminiBody: unknown, modelNam
 
 export function translateResponse(provider: string, providerRes: unknown, modelName: string): unknown {
   const t = getTranslator(provider);
+  const family = providerFamily(provider);
 
-  if (provider === 'google') return providerRes;
-  if (OPENAI_COMPAT.has(provider)) return t?.mapOpenAIToGemini ? t.mapOpenAIToGemini(providerRes, modelName) : providerRes;
-  if (ANTHROPIC_COMPAT.has(provider)) return t?.mapAnthropicToGemini ? t.mapAnthropicToGemini(providerRes, modelName) : providerRes;
+  if (family === 'google') return providerRes;
+  if (family === 'openai') return t?.mapOpenAIToGemini ? t.mapOpenAIToGemini(providerRes, modelName) : providerRes;
+  if (family === 'anthropic')
+    return t?.mapAnthropicToGemini ? t.mapAnthropicToGemini(providerRes, modelName) : providerRes;
 
   const fnName = `map${provider.charAt(0).toUpperCase() + provider.slice(1)}ToGemini`;
   if (t && typeof t[fnName] === 'function') {
@@ -119,10 +132,12 @@ export function translateResponse(provider: string, providerRes: unknown, modelN
 
 export function translateStreamChunk(provider: string, chunk: unknown, modelName: string): unknown {
   const t = getTranslator(provider);
+  const family = providerFamily(provider);
 
-  if (provider === 'google') return t?.mapGoogleChunkToGemini ? t.mapGoogleChunkToGemini(chunk, modelName) : null;
-  if (OPENAI_COMPAT.has(provider)) return t?.mapOpenAIChunkToGemini ? t.mapOpenAIChunkToGemini(chunk, modelName) : null;
-  if (ANTHROPIC_COMPAT.has(provider)) return t?.mapAnthropicChunkToGemini ? t.mapAnthropicChunkToGemini(chunk, modelName) : null;
+  if (family === 'google') return t?.mapGoogleChunkToGemini ? t.mapGoogleChunkToGemini(chunk, modelName) : null;
+  if (family === 'openai') return t?.mapOpenAIChunkToGemini ? t.mapOpenAIChunkToGemini(chunk, modelName) : null;
+  if (family === 'anthropic')
+    return t?.mapAnthropicChunkToGemini ? t.mapAnthropicChunkToGemini(chunk, modelName) : null;
 
   const fnName = `map${provider.charAt(0).toUpperCase() + provider.slice(1)}ChunkToGemini`;
   if (t && typeof t[fnName] === 'function') {
@@ -136,10 +151,11 @@ export function getProviderHeaders(provider: string, apiKey: string): ProviderHe
   const headers: ProviderHeaders = { 'Content-Type': 'application/json' };
   if (!apiKey || apiKey === 'none') return headers;
 
-  if (provider === 'anthropic' || ANTHROPIC_COMPAT.has(provider)) {
+  const family = providerFamily(provider);
+  if (provider === 'anthropic' || family === 'anthropic') {
     headers['x-api-key'] = apiKey;
     headers['anthropic-version'] = '2025-04-01';
-  } else if (provider === 'google') {
+  } else if (family === 'google') {
     headers['x-goog-api-key'] = apiKey;
   } else if (provider === 'openrouter') {
     headers['Authorization'] = `Bearer ${apiKey}`;
@@ -152,7 +168,7 @@ export function getProviderHeaders(provider: string, apiKey: string): ProviderHe
 }
 
 export function supportsStreaming(provider: string): boolean {
-  return OPENAI_COMPAT.has(provider) || ANTHROPIC_COMPAT.has(provider) || provider === 'google';
+  return providerFamily(provider) !== 'unknown';
 }
 
 // ─── URL Helpers ──────────────────────────────────────────────────────────
@@ -173,7 +189,3 @@ export function getProviderUrl(
   }
   return baseUrl;
 }
-
-// ─── Boot ─────────────────────────────────────────────────────────────────
-
-loadTranslators();

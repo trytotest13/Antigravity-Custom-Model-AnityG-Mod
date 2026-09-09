@@ -6,64 +6,36 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as https from 'https';
-import * as http from 'http';
 import log from 'electron-log/main';
 import { fetchIdeDownloadUrl, getPlatformKey, getIdeInstallPath } from './constants';
 import { IDE_OLD_DATA_DIR, IDE_NEW_DATA_DIR } from '../paths';
 
 // ─── Download ──────────────────────────────────────────────────────────────
 
-export function downloadFile(
+export async function downloadFile(
   url: string,
   destPath: string,
   onProgress?: (percent: number) => void,
-  maxRedirects = 5,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (maxRedirects <= 0) {
-      reject(new Error('Too many redirects'));
-      return;
-    }
-    const proto = url.startsWith('https') ? https : http;
-    const req = proto.get(url, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const redirectUrl = res.headers.location.startsWith('http')
-          ? res.headers.location
-          : new URL(res.headers.location, url).toString();
-        downloadFile(redirectUrl, destPath, onProgress, maxRedirects - 1)
-          .then(resolve)
-          .catch(reject);
-        return;
-      }
-      if (res.statusCode && res.statusCode >= 400) {
-        reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
-        return;
-      }
-      const totalBytes = parseInt(res.headers['content-length'] || '0', 10);
-      let downloadedBytes = 0;
-      const dir = path.dirname(destPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      const fileStream = fs.createWriteStream(destPath);
-      res.on('data', (chunk: Buffer) => {
-        downloadedBytes += chunk.length;
-        if (totalBytes > 0 && onProgress) {
-          onProgress(Math.round((downloadedBytes / totalBytes) * 100));
-        }
-      });
-      res.pipe(fileStream);
-      fileStream.on('finish', () => {
-        fileStream.close();
-        resolve();
-      });
-      fileStream.on('error', (err) => {
-        fs.unlinkSync(destPath);
-        reject(err);
-      });
-    });
-    req.on('error', reject);
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  const totalBytes = Number(res.headers.get('content-length') || '0');
+  let downloadedBytes = 0;
+  await fsPromises.mkdir(path.dirname(destPath), { recursive: true });
+  const fileStream = fs.createWriteStream(destPath);
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('Empty response body');
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    downloadedBytes += value.length;
+    if (totalBytes > 0 && onProgress) onProgress(Math.round((downloadedBytes / totalBytes) * 100));
+    if (!fileStream.write(value)) await new Promise((r) => fileStream.once('drain', r));
+  }
+  fileStream.end();
+  await new Promise((resolve, reject) => {
+    fileStream.on('finish', resolve);
+    fileStream.on('error', reject);
   });
 }
 

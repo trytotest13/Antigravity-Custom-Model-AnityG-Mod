@@ -1,4 +1,4 @@
-import { SleepBlocker } from '../utils';
+import { setKeepComputerAwake } from '../utils';
 
 // Setting keys
 export enum SettingKey {
@@ -20,9 +20,16 @@ interface StorageManager {
   getItems(): Promise<Record<string, string | null>>;
 }
 
+function applySideEffects(settings: Record<string, string | null>): void {
+  const val = settings[SettingKey.KEEP_COMPUTER_AWAKE];
+  if (val !== undefined) {
+    const preventSleep = val === null ? DEFAULTS.get(SettingKey.KEEP_COMPUTER_AWAKE) : val === 'true';
+    setKeepComputerAwake(preventSleep);
+  }
+}
+
 /**
- * A thin wrapper around StorageManager to listen for changes
- * in settings and apply their side effects.
+ * Listens for settings changes and applies their side effects.
  */
 export class SettingsService {
   private storageManager: StorageManager;
@@ -30,22 +37,14 @@ export class SettingsService {
   constructor(storageManager: StorageManager) {
     this.storageManager = storageManager;
     this.storageManager.onDidChange((changes) => {
-      this.applySideEffects(changes);
+      applySideEffects(changes);
     });
     void this.initialize();
   }
 
   async initialize(): Promise<void> {
     const items = await this.storageManager.getItems();
-    this.applySideEffects(items);
-  }
-
-  applySideEffects(settings: Record<string, string | null>): void {
-    const val = settings[SettingKey.KEEP_COMPUTER_AWAKE];
-    if (val !== undefined) {
-      const preventSleep = val === null ? DEFAULTS.get(SettingKey.KEEP_COMPUTER_AWAKE) : val === 'true';
-      SleepBlocker.getInstance().shouldKeepComputerAwake(preventSleep);
-    }
+    applySideEffects(items);
   }
 
   async getSetting(key: SettingKey): Promise<boolean> {

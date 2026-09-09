@@ -1,12 +1,12 @@
 #!/bin/bash
-# Antigravity Safe Deploy (macOS)
-# Re-packages dist/ into the app.asar inside Antigravity.app
+# Antigravity Safe Deploy (macOS + Linux)
+# Re-packages dist/ into the app.asar inside the Antigravity installation
 # Usage: bash deploy.sh
 
 set -e
 
 echo "============================================"
-echo "  Antigravity Safe Deploy Script (macOS)"
+echo "  Antigravity Safe Deploy Script"
 echo "============================================"
 
 # 1. Kill Antigravity
@@ -17,9 +17,24 @@ pkill -f "language_server" 2>/dev/null || true
 sleep 3
 echo "   OK"
 
-# 2. Define paths
+# 2. Locate app.asar (macOS fixed path, Linux auto-detect)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ASAR_PATH="/Applications/Antigravity.app/Contents/Resources/app.asar"
+ASAR_PATH=""
+if [ "$(uname -s)" = "Darwin" ]; then
+    ASAR_PATH="/Applications/Antigravity.app/Contents/Resources/app.asar"
+else
+    for p in \
+        "$HOME/.local/share/Programs/antigravity/resources/app.asar" \
+        "/opt/antigravity/resources/app.asar" \
+        "/usr/lib/antigravity/resources/app.asar" \
+        "/usr/local/lib/antigravity/resources/app.asar"; do
+        if [ -f "$p" ]; then ASAR_PATH="$p"; echo "[2/6] Found Antigravity at: $ASAR_PATH"; break; fi
+    done
+fi
+if [ -z "$ASAR_PATH" ] || [ ! -f "$ASAR_PATH" ]; then
+    echo "[2/6] ERROR: app.asar not found: $ASAR_PATH"
+    exit 1
+fi
 BACKUP_ASAR="${ASAR_PATH}.backup"
 TEMP_DIR="$(mktemp -d -t antigravity_safe_deploy)"
 
@@ -69,15 +84,12 @@ rm -rf "$DEST_DIST"
 cp -R "$SRC_DIST" "$DEST_DIST"
 echo "   OK - dist copied."
 
-# Also copy repack.ps1 and deploy.sh (updated versions)
-SRC_REPACK="$SCRIPT_DIR/repack.ps1"
-if [ -f "$SRC_REPACK" ]; then
-    cp "$SRC_REPACK" "$TEMP_DIR/repack.ps1"
-fi
-SRC_REPACK_SH="$SCRIPT_DIR/repack.sh"
-if [ -f "$SRC_REPACK_SH" ]; then
-    cp "$SRC_REPACK_SH" "$TEMP_DIR/repack.sh"
-fi
+# Also copy repack scripts (updated versions)
+for f in "$SCRIPT_DIR"/repack.*; do
+    if [ -f "$f" ]; then
+        cp "$f" "$TEMP_DIR/"
+    fi
+done
 
 # 6. Re-pack app.asar
 echo "[5/6] Packaging app.asar..."
@@ -102,12 +114,31 @@ rm -rf "$TEMP_DIR"
 
 # 7. Relaunch Antigravity
 echo "[6/6] Launching Antigravity..."
-if [ -d "/Applications/Antigravity.app" ]; then
-    open "/Applications/Antigravity.app"
-    echo ""
-    echo "============================================"
-    echo "  SUCCESS! Antigravity restarted."
-    echo "============================================"
+if [ "$(uname -s)" = "Darwin" ]; then
+    if [ -d "/Applications/Antigravity.app" ]; then
+        open "/Applications/Antigravity.app"
+        echo ""
+        echo "============================================"
+        echo "  SUCCESS! Antigravity restarted."
+        echo "============================================"
+    else
+        echo "  Warning: Antigravity.app not found. Launch manually."
+    fi
 else
-    echo "  Warning: Antigravity.app not found. Launch manually."
+    ASAR_DIR="$(dirname "$ASAR_PATH")"
+    APP_DIR="$(dirname "$ASAR_DIR")"
+    EXE_PATH=""
+    for e in "$APP_DIR/Antigravity" "$APP_DIR/antigravity" \
+        "$HOME/.local/share/Programs/antigravity/Antigravity" "/opt/antigravity/Antigravity"; do
+        if [ -f "$e" ]; then EXE_PATH="$e"; break; fi
+    done
+    if [ -n "$EXE_PATH" ]; then
+        nohup "$EXE_PATH" > /dev/null 2>&1 &
+        echo ""
+        echo "============================================"
+        echo "  SUCCESS! Antigravity restarted."
+        echo "============================================"
+    else
+        echo "  Warning: Antigravity executable not found. Launch manually."
+    fi
 fi

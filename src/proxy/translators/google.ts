@@ -52,30 +52,14 @@ interface GeminiRequestBody {
   };
 }
 
-// ─── Request Translation (Passthrough) ────────────────────────────────────
+// ─── Request/Response Translation (Passthrough: Google speaks Gemini natively) ─
 
-/**
- * Google AI Studio uses the same Gemini format — just pass through.
- * The caller handles URL routing (streamGenerateContent vs generateContent).
- */
 export function mapGeminiToGoogle(geminiBody: GeminiRequestBody, modelName: string): GeminiRequestBody {
-  // Ensure the external model name is set
-  const body: GeminiRequestBody = { ...geminiBody };
-  if (modelName && !body.model) {
-    body.model = modelName;
-  }
-  return body;
+  if (modelName && !geminiBody.model) return { ...geminiBody, model: modelName };
+  return geminiBody;
 }
 
-// ─── Response Translation (Passthrough) ───────────────────────────────────
-
-/**
- * Google AI Studio returns Gemini-format responses directly.
- * Just pass through — the proxy wraps it in the Cloud Code envelope.
- */
 export function mapGoogleToGemini(googleRes: unknown, _modelName: string): unknown {
-  // Google AI Studio response is already in Gemini format
-  // Wrapped by caller in { response, traceId, metadata }
   return googleRes;
 }
 

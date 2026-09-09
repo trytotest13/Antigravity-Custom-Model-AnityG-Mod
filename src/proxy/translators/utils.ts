@@ -55,203 +55,258 @@ export interface FileListResponse {
 export type ToolResponse = string | DirectoryItem[] | MatchResult[] | FileListResponse;
 
 // ─── Tool Parameter Normalization ──────────────────────────────────────────
+// One alias->canonical map: key is "<tool>.<alias>", value is the canonical
+// PascalCase key. Covers primary aliases and "<tool>.<subkey>" entries alike.
 
-const TOOL_PARAM_NORMALIZATION: Record<string, { primaryKey: string; aliases: string[] }> = {
-  view_file: {
-    primaryKey: 'AbsolutePath',
-    aliases: [
-      'absolute_path',
-      'absolutePath',
-      'path',
-      'file_path',
-      'filePath',
-      'file',
-      'filename',
-      'FilePath',
-      'FileName',
-      'target',
-      'source',
-      'input',
-      'uri',
-    ],
-  },
-  list_dir: {
-    primaryKey: 'DirectoryPath',
-    aliases: [
-      'directory_path',
-      'directoryPath',
-      'path',
-      'dir_path',
-      'dirPath',
-      'dir',
-      'directory',
-      'folder',
-      'FolderPath',
-      'folder_path',
-      'target',
-      'root',
-      'base',
-    ],
-  },
-  grep_search: {
-    primaryKey: 'Query',
-    aliases: [
-      'query',
-      'search',
-      'SearchQuery',
-      'search_query',
-      'searchQuery',
-      'pattern',
-      'Pattern',
-      'regex',
-      'Regex',
-      'term',
-      'keyword',
-      'text',
-      'needle',
-    ],
-  },
-  'grep_search.SearchPath': {
-    primaryKey: 'SearchPath',
-    aliases: [
-      'search_path',
-      'searchPath',
-      'path',
-      'directory',
-      'DirectoryPath',
-      'directory_path',
-      'folder',
-      'dir',
-      'root',
-      'base',
-    ],
-  },
-  replace_file_content: {
-    primaryKey: 'TargetFile',
-    aliases: [
-      'target_file',
-      'targetFile',
-      'file',
-      'AbsolutePath',
-      'absolute_path',
-      'filePath',
-      'file_path',
-      'path',
-      'FilePath',
-      'target',
-      'filename',
-      'source',
-    ],
-  },
-  write_file: {
-    primaryKey: 'AbsolutePath',
-    aliases: [
-      'absolute_path',
-      'absolutePath',
-      'path',
-      'file_path',
-      'filePath',
-      'file',
-      'filename',
-      'FilePath',
-      'FileName',
-      'target_file',
-      'targetFile',
-      'target',
-      'dest',
-      'destination',
-    ],
-  },
-  run_command: {
-    primaryKey: 'CommandLine',
-    aliases: [
-      'command_line',
-      'commandLine',
-      'cmd',
-      'command',
-      'Command',
-      'Cmd',
-      'shell_command',
-      'shellCommand',
-      'script',
-      'exec',
-      'execute',
-    ],
-  },
-  'run_command.Cwd': {
-    primaryKey: 'Cwd',
-    aliases: ['cwd', 'working_dir', 'workingDirectory', 'working_directory', 'dir', 'directory', 'path', 'folder'],
-  },
-  read_file: {
-    primaryKey: 'AbsolutePath',
-    aliases: [
-      'absolute_path',
-      'absolutePath',
-      'path',
-      'file_path',
-      'filePath',
-      'file',
-      'filename',
-      'FilePath',
-      'FileName',
-      'target',
-      'source',
-      'input',
-    ],
-  },
-  search_files: {
-    primaryKey: 'SearchPath',
-    aliases: [
-      'search_path',
-      'searchPath',
-      'path',
-      'directory',
-      'DirectoryPath',
-      'directory_path',
-      'folder',
-      'dir',
-      'root',
-      'base',
-    ],
-  },
-  create_directory: {
-    primaryKey: 'DirectoryPath',
-    aliases: ['directory_path', 'directoryPath', 'path', 'dir_path', 'dirPath', 'dir', 'folder', 'target', 'name'],
-  },
-  delete_file: {
-    primaryKey: 'AbsolutePath',
-    aliases: [
-      'absolute_path',
-      'absolutePath',
-      'path',
-      'file_path',
-      'filePath',
-      'file',
-      'filename',
-      'FilePath',
-      'target',
-    ],
-  },
-  move_file: {
-    primaryKey: 'SourcePath',
-    aliases: [
-      'source_path',
-      'sourcePath',
-      'source',
-      'from',
-      'src',
-      'path',
-      'file_path',
-      'filePath',
-      'AbsolutePath',
-      'absolute_path',
-    ],
-  },
-  'move_file.DestinationPath': {
-    primaryKey: 'DestinationPath',
-    aliases: ['destination_path', 'destinationPath', 'dest', 'destination', 'to', 'dst', 'target'],
-  },
+const TOOL_PRIMARY: Record<string, string> = {
+  view_file: 'AbsolutePath',
+  list_dir: 'DirectoryPath',
+  grep_search: 'Query',
+  replace_file_content: 'TargetFile',
+  write_file: 'AbsolutePath',
+  run_command: 'CommandLine',
+  read_file: 'AbsolutePath',
+  search_files: 'SearchPath',
+  create_directory: 'DirectoryPath',
+  delete_file: 'AbsolutePath',
+  move_file: 'SourcePath',
 };
+
+const TOOL_ALIAS: Map<string, string> = new Map(
+  (
+    [
+      [
+        'view_file',
+        'AbsolutePath',
+        [
+          'absolute_path',
+          'absolutePath',
+          'path',
+          'file_path',
+          'filePath',
+          'file',
+          'filename',
+          'FilePath',
+          'FileName',
+          'target',
+          'source',
+          'input',
+          'uri',
+        ],
+      ],
+      [
+        'list_dir',
+        'DirectoryPath',
+        [
+          'directory_path',
+          'directoryPath',
+          'path',
+          'dir_path',
+          'dirPath',
+          'dir',
+          'directory',
+          'folder',
+          'FolderPath',
+          'folder_path',
+          'target',
+          'root',
+          'base',
+        ],
+      ],
+      [
+        'grep_search',
+        'Query',
+        [
+          'query',
+          'search',
+          'SearchQuery',
+          'search_query',
+          'searchQuery',
+          'pattern',
+          'Pattern',
+          'regex',
+          'Regex',
+          'term',
+          'keyword',
+          'text',
+          'needle',
+        ],
+      ],
+      [
+        'grep_search',
+        'SearchPath',
+        [
+          'search_path',
+          'searchPath',
+          'path',
+          'directory',
+          'DirectoryPath',
+          'directory_path',
+          'folder',
+          'dir',
+          'root',
+          'base',
+        ],
+      ],
+      [
+        'replace_file_content',
+        'TargetFile',
+        [
+          'target_file',
+          'targetFile',
+          'file',
+          'AbsolutePath',
+          'absolute_path',
+          'filePath',
+          'file_path',
+          'path',
+          'FilePath',
+          'target',
+          'filename',
+          'source',
+        ],
+      ],
+      [
+        'write_file',
+        'AbsolutePath',
+        [
+          'absolute_path',
+          'absolutePath',
+          'path',
+          'file_path',
+          'filePath',
+          'file',
+          'filename',
+          'FilePath',
+          'FileName',
+          'target_file',
+          'targetFile',
+          'target',
+          'dest',
+          'destination',
+        ],
+      ],
+      [
+        'run_command',
+        'CommandLine',
+        [
+          'command_line',
+          'commandLine',
+          'cmd',
+          'command',
+          'Command',
+          'Cmd',
+          'shell_command',
+          'shellCommand',
+          'script',
+          'exec',
+          'execute',
+        ],
+      ],
+      [
+        'run_command',
+        'Cwd',
+        ['cwd', 'working_dir', 'workingDirectory', 'working_directory', 'dir', 'directory', 'path', 'folder'],
+      ],
+      [
+        'read_file',
+        'AbsolutePath',
+        [
+          'absolute_path',
+          'absolutePath',
+          'path',
+          'file_path',
+          'filePath',
+          'file',
+          'filename',
+          'FilePath',
+          'FileName',
+          'target',
+          'source',
+          'input',
+        ],
+      ],
+      [
+        'search_files',
+        'SearchPath',
+        [
+          'search_path',
+          'searchPath',
+          'path',
+          'directory',
+          'DirectoryPath',
+          'directory_path',
+          'folder',
+          'dir',
+          'root',
+          'base',
+        ],
+      ],
+      [
+        'create_directory',
+        'DirectoryPath',
+        ['directory_path', 'directoryPath', 'path', 'dir_path', 'dirPath', 'dir', 'folder', 'target', 'name'],
+      ],
+      [
+        'delete_file',
+        'AbsolutePath',
+        ['absolute_path', 'absolutePath', 'path', 'file_path', 'filePath', 'file', 'filename', 'FilePath', 'target'],
+      ],
+      [
+        'move_file',
+        'SourcePath',
+        [
+          'source_path',
+          'sourcePath',
+          'source',
+          'from',
+          'src',
+          'path',
+          'file_path',
+          'filePath',
+          'AbsolutePath',
+          'absolute_path',
+        ],
+      ],
+      [
+        'move_file',
+        'DestinationPath',
+        ['destination_path', 'destinationPath', 'dest', 'destination', 'to', 'dst', 'target'],
+      ],
+    ] as [string, string, string[]][]
+  ).flatMap(([tool, canonical, aliases]) => [
+    [`${tool}.${canonical}`, canonical],
+    ...aliases.map((a): [string, string] => [`${tool}.${a}`, canonical]),
+  ]),
+);
+
+const UNIVERSAL_ALIAS: Record<string, string> = {
+  path: 'AbsolutePath',
+  file_path: 'AbsolutePath',
+  filePath: 'AbsolutePath',
+  file: 'AbsolutePath',
+  filename: 'AbsolutePath',
+  target: 'AbsolutePath',
+  directory_path: 'DirectoryPath',
+  directoryPath: 'DirectoryPath',
+  dir: 'DirectoryPath',
+  directory: 'DirectoryPath',
+  folder: 'DirectoryPath',
+  target_file: 'TargetFile',
+  targetFile: 'TargetFile',
+  source: 'SourcePath',
+  sourcePath: 'SourcePath',
+  source_path: 'SourcePath',
+  dest: 'DestinationPath',
+  destination: 'DestinationPath',
+};
+
+function guessPathValue(entries: [string, unknown][]): [string, unknown] | undefined {
+  return (
+    entries.find(([, v]) => typeof v === 'string' && (v.includes('/') || v.includes('\\') || v.includes('.'))) ||
+    entries.find(([, v]) => typeof v === 'string' && v.length > 0)
+  );
+}
 
 /**
  * Normalizes parameter names from external models to match Antigravity's expected PascalCase format.
@@ -262,78 +317,39 @@ export function normalizeToolArgs(
 ): Record<string, unknown> {
   if (!args || typeof args !== 'object') return args || {};
 
+  const primaryKey = TOOL_PRIMARY[name];
+  if (!primaryKey) return applyUniversalPathFallback(args);
+
   // Handle array args
   if (Array.isArray(args)) {
-    const config = TOOL_PARAM_NORMALIZATION[name];
-    if (config && args.length > 0 && typeof args[0] === 'string') {
-      return { [config.primaryKey]: args[0] };
-    }
+    if (args.length > 0 && typeof args[0] === 'string') return { [primaryKey]: args[0] };
     return {};
-  }
-
-  const config = TOOL_PARAM_NORMALIZATION[name];
-  if (!config) {
-    return applyUniversalPathFallback(args);
   }
 
   const normalized: Record<string, unknown> = {};
   const usedKeys = new Set<string>();
 
   for (const [key, value] of Object.entries(args)) {
-    let matched = false;
-
-    if (key === config.primaryKey || (config.aliases && config.aliases.includes(key))) {
-      normalized[config.primaryKey] = value;
+    const canonical = TOOL_ALIAS.get(`${name}.${key}`);
+    if (canonical) {
+      normalized[canonical] = value;
       usedKeys.add(key);
-      matched = true;
-    }
-
-    if (!matched) {
-      const subConfigKey = name + '.' + key;
-      const subConfig = TOOL_PARAM_NORMALIZATION[subConfigKey];
-      if (subConfig) {
-        normalized[subConfig.primaryKey] = value;
-        usedKeys.add(key);
-        matched = true;
-      }
-    }
-
-    if (!matched) {
-      for (const [ck, cv] of Object.entries(TOOL_PARAM_NORMALIZATION)) {
-        if (ck.startsWith(name + '.') && cv.aliases && cv.aliases.includes(key)) {
-          normalized[cv.primaryKey] = value;
-          usedKeys.add(key);
-          matched = true;
-          break;
-        }
-      }
-    }
-
-    if (!matched) {
+    } else {
       normalized[key] = value;
     }
   }
 
-  if (!normalized[config.primaryKey]) {
+  if (!normalized[primaryKey]) {
     const unassigned = Object.entries(args).filter(([k]) => !usedKeys.has(k));
-    let found = unassigned.find(
-      ([, v]) => typeof v === 'string' && (v.includes('/') || v.includes('\\') || v.includes('.')),
-    );
-    if (!found) found = unassigned.find(([, v]) => typeof v === 'string' && v.length > 0);
-    if (!found) {
-      found = Object.entries(args).find(
-        ([, v]) => typeof v === 'string' && (v.includes('/') || v.includes('\\') || v.includes('.')),
-      );
-      if (!found) found = Object.entries(args).find(([, v]) => typeof v === 'string' && v.length > 0);
-    }
+    const found = guessPathValue(unassigned) || guessPathValue(Object.entries(args));
     if (found) {
-      normalized[config.primaryKey] = found[1];
+      normalized[primaryKey] = found[1];
       log.info(
-        `[Utils] normalizeToolArgs fallback: "${name}" extracted ${config.primaryKey}=${found[1]} from key "${found[0]}"`,
+        `[Utils] normalizeToolArgs fallback: "${name}" extracted ${primaryKey}=${found[1]} from key "${found[0]}"`,
       );
     } else {
       log.warn(
-        `[Utils] normalizeToolArgs: "${name}" could not find value for "${config.primaryKey}". args=${JSON.stringify(args)}`,
+        `[Utils] normalizeToolArgs: "${name}" could not find value for "${primaryKey}". args=${JSON.stringify(args)}`,
       );
     }
   }
@@ -343,29 +359,9 @@ export function normalizeToolArgs(
 
 function applyUniversalPathFallback(args: Record<string, unknown>): Record<string, unknown> {
   const result = { ...args };
-  const aliasMap: Record<string, string> = {
-    path: 'AbsolutePath',
-    file_path: 'AbsolutePath',
-    filePath: 'AbsolutePath',
-    file: 'AbsolutePath',
-    filename: 'AbsolutePath',
-    target: 'AbsolutePath',
-    directory_path: 'DirectoryPath',
-    directoryPath: 'DirectoryPath',
-    dir: 'DirectoryPath',
-    directory: 'DirectoryPath',
-    folder: 'DirectoryPath',
-    target_file: 'TargetFile',
-    targetFile: 'TargetFile',
-    source: 'SourcePath',
-    sourcePath: 'SourcePath',
-    source_path: 'SourcePath',
-    dest: 'DestinationPath',
-    destination: 'DestinationPath',
-  };
 
   for (const [key, value] of Object.entries(args)) {
-    const mappedKey = aliasMap[key];
+    const mappedKey = UNIVERSAL_ALIAS[key];
     if (mappedKey) {
       result[mappedKey] = value;
       delete result[key];

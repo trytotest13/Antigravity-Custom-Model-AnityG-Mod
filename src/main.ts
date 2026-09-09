@@ -22,7 +22,7 @@ import { getAppStoragePath, getLsLogPath } from './paths';
 import { setupApplicationMenu } from './menu';
 import { registerCustomSchemes, registerCustomSchemeHandlers } from './customScheme';
 import { DEFAULTS, SettingsService, SettingKey } from './services/settingsService';
-import { maybeShowIdeInstallWizard } from './ideInstall';
+import { maybeShowIdeInstallWizard } from './ideInstall/wizard';
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {

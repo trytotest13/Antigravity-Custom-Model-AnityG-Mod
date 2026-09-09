@@ -130,32 +130,20 @@ export const showOrCreateWindow = (port: number): void => {
 };
 
 /**
- * Manages the power save blocker to keep the computer awake.
+ * Keeps the computer awake while `keep` is true (power save blocker).
  */
-export class SleepBlocker {
-  private static instance: SleepBlocker;
-  private currentBlockerId: number | null = null;
+let awakeBlockerId: number | null = null;
 
-  static getInstance(): SleepBlocker {
-    if (!SleepBlocker.instance) {
-      SleepBlocker.instance = new SleepBlocker();
+export function setKeepComputerAwake(keep: boolean | undefined): void {
+  if (keep) {
+    if (awakeBlockerId === null) {
+      awakeBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+      console.log('Power save blocker started:', awakeBlockerId);
     }
-    return SleepBlocker.instance;
-  }
-
-  shouldKeepComputerAwake(keep: boolean | undefined): void {
-    if (keep) {
-      if (this.currentBlockerId === null) {
-        this.currentBlockerId = powerSaveBlocker.start('prevent-display-sleep');
-        console.log('Power save blocker started:', this.currentBlockerId);
-      }
-    } else {
-      if (this.currentBlockerId !== null) {
-        powerSaveBlocker.stop(this.currentBlockerId);
-        console.log('Power save blocker stopped:', this.currentBlockerId);
-        this.currentBlockerId = null;
-      }
-    }
+  } else if (awakeBlockerId !== null) {
+    powerSaveBlocker.stop(awakeBlockerId);
+    console.log('Power save blocker stopped:', awakeBlockerId);
+    awakeBlockerId = null;
   }
 }
 

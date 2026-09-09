@@ -1,7 +1,6 @@
 import { autoUpdater } from 'electron-updater';
 import { app, BrowserWindow, dialog, Menu } from 'electron';
 import * as path from 'path';
-import { spawn } from 'child_process';
 
 export enum MenuUpdateStep {
   CheckForUpdates = 'Check for Updates',
@@ -119,14 +118,9 @@ export function initAutoUpdater(isHeadless: boolean): void {
   autoUpdater.on('update-downloaded', (info) => {
     console.log(`[AutoUpdater] Update downloaded: ${info.version}`);
     if (isHeadless) {
-      // Proceed to auto install in headless mode
+      // Auto install in headless mode (no restart-to-update menu)
       if (app.isPackaged) {
-        if (process.platform === 'linux') {
-          const downloadedFilePath = info.downloadedFile;
-          headlessQuitAndInstall(downloadedFilePath);
-        } else {
-          autoUpdater.quitAndInstall();
-        }
+        autoUpdater.quitAndInstall();
       } else {
         console.log('[AutoUpdater] Headless mode: Skipping quitAndInstall (not packaged).');
       }
@@ -160,44 +154,4 @@ export function checkForUpdates(isManual = false): void {
 
 export function quitAndInstall(): void {
   autoUpdater.quitAndInstall();
-}
-
-/**
- * Electron native quitAndInstall doesn't relaunch the app with command line arguments.
- * This function waits for the app process to quit, manually replaces the executable with
- * the downloaded update, and then relaunches it with the right headless flags.
- */
-function headlessQuitAndInstall(downloadedFilePath: string): void {
-  console.log('[AutoUpdater] Headless mode: Scheduling post-quit restart.');
-  try {
-    const currentPid = process.pid;
-    const appPath = process.env.APPIMAGE || process.execPath;
-    const args = ['--ozone-platform=headless', '--headless', '--disable-gpu', '--no-sandbox'];
-    let script = '';
-    if (downloadedFilePath) {
-      console.log(`[AutoUpdater] Will manually replace ${appPath} with ${downloadedFilePath}`);
-      script = `
-        while kill -0 ${currentPid} 2>/dev/null; do sleep 0.5; done
-        cp -f "${downloadedFilePath}" "${appPath}"
-        chmod +x "${appPath}"
-        "${appPath}" ${args.join(' ')}
-      `;
-    } else {
-      console.warn('[AutoUpdater] No downloaded file path found, relaunching without update.');
-      script = `
-        while kill -0 ${currentPid} 2>/dev/null; do sleep 0.5; done
-        sleep 3
-        "${appPath}" ${args.join(' ')}
-      `;
-    }
-    const child = spawn('sh', ['-c', script], {
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env, ELECTRON_OZONE_PLATFORM_HINT: 'headless' },
-    });
-    child.unref();
-  } catch (e) {
-    console.error('[AutoUpdater] Failed to schedule restart:', e);
-  }
-  app.quit();
 }
