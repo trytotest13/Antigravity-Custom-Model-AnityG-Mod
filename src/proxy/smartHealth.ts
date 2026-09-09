@@ -1,0 +1,102 @@
+/**
+ * Smart health: circuit breaker + error classifier for the Auto router.
+ * Electron-free so autoRouter and vitest can use it directly.
+ * Keyed by model name (routing is per-CustomModel, not per-provider).
+ */
+
+export interface SwitchVerdict {
+  switch: boolean;
+  retrySame: boolean;
+  reason: string;
+}
+
+/** Pure classifier: which failures deserve a switch / same-model retry. */
+export function shouldSwitch(status?: number, err?: Error): SwitchVerdict {
+  if (err) {
+    const msg = (err.message || '').toLowerCase();
+    if (msg.includes('abort') || msg.includes('timeout') || msg.includes('timed out'))
+      return { switch: true, retrySame: false, reason: 'timeout' };
+    if (msg.includes('econnrefused') || msg.includes('enotfound') || msg.includes('fetch failed') || msg.includes('econnreset'))
+      return { switch: true, retrySame: false, reason: 'network unreachable' };
+    if (msg.includes('429') || msg.includes('rate limit'))
+      return { switch: true, retrySame: true, reason: 'rate limited' };
+  }
+  if (status !== undefined) {
+    if (status === 429) return { switch: true, retrySame: true, reason: 'rate limited' };
+    if (status === 408 || status === 504) return { switch: true, retrySame: true, reason: 'gateway timeout' };
+    if (status === 500 || status === 502 || status === 503)
+      return { switch: true, retrySame: true, reason: 'server error' };
+    if (status === 401 || status === 403) return { switch: true, retrySame: false, reason: 'auth failure' };
+    if (status === 404) return { switch: true, retrySame: false, reason: 'model not found' };
+    // 400 and other 4xx are the client's fault — fail fast, don't blame the model.
+    return { switch: false, retrySame: false, reason: `client error ${status}` };
+  }
+  return { switch: false, retrySame: false, reason: 'unknown' };
+}
+
+interface Entry {
+  fails: number;
+  openUntil: number;
+  latencyMs: number; // EWMA
+  samples: number;
+}
+
+const FAILS_TO_OPEN = 3;
+const BASE_BACKOFF_MS = 30_000;
+const MAX_BACKOFF_MS = 300_000;
+
+export class HealthMonitor {
+  private health = new Map<string, Entry>();
+
+  private entry(key: string): Entry {
+    let e = this.health.get(key);
+    if (!e) {
+      e = { fails: 0, openUntil: 0, latencyMs: 0, samples: 0 };
+      this.health.set(key, e);
+    }
+    return e;
+  }
+
+  /** True while the breaker is open. Expired breakers reset lazily. */
+  isOpen(key: string): boolean {
+    const e = this.health.get(key);
+    if (!e || e.openUntil === 0) return false;
+    if (Date.now() < e.openUntil) return true;
+    e.fails = 0;
+    e.openUntil = 0;
+    return false;
+  }
+
+  /** Sort penalty: sick models sink below healthy ones with equal task score. */
+  penalty(key: string): number {
+    const e = this.health.get(key);
+    if (!e || e.fails === 0) return 0;
+    // ponytail: slow EWMA (>5s) costs extra so future picks prefer faster models
+    const slow = e.samples > 0 && e.latencyMs > 5000 ? 0.5 : 0;
+    return Math.min(e.fails * 0.5, 1.5) + slow;
+  }
+
+  reportSuccess(key: string, latencyMs: number): void {
+    const e = this.entry(key);
+    e.fails = 0;
+    e.openUntil = 0;
+    e.latencyMs = e.samples > 0 ? e.latencyMs * 0.7 + latencyMs * 0.3 : latencyMs;
+    e.samples += 1;
+  }
+
+  reportFailure(key: string): void {
+    const e = this.entry(key);
+    e.fails += 1;
+    if (e.fails >= FAILS_TO_OPEN) {
+      const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (e.fails - FAILS_TO_OPEN), MAX_BACKOFF_MS);
+      e.openUntil = Date.now() + backoff;
+    }
+  }
+
+  /** Test hook. */
+  clear(): void {
+    this.health.clear();
+  }
+}
+
+export const smartHealth = new HealthMonitor();
