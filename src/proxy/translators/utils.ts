@@ -5,6 +5,7 @@
 
 import * as path from 'path';
 import log from 'electron-log';
+import { modelToolCallIds, translatedToolCalls, stateTimestamps, touchStateTimestamp } from '../shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -489,6 +490,34 @@ export function translateToolCallToNative(name: string, args: ToolCallArgs): Tra
   }
 
   return { name, args: args as Record<string, unknown> };
+}
+
+/**
+ * Records model→call-id mapping and native translation bookkeeping shared by
+ * the OpenAI and Anthropic translators (was 5 copy-pasted blocks).
+ */
+export function trackTranslatedToolCall(
+  modelName: string,
+  origName: string,
+  normalizedArgs: ToolCallArgs,
+  callId: string,
+): TranslatedToolCall {
+  const modelTCIds = modelToolCallIds.get(modelName) || {};
+  modelTCIds[origName] = callId;
+  modelToolCallIds.set(modelName, modelTCIds);
+  touchStateTimestamp(stateTimestamps.toolCallIds, modelName);
+  const translated = translateToolCallToNative(origName, normalizedArgs);
+  if (translated.name !== origName) {
+    translated.args = normalizeToolArgs(translated.name, translated.args);
+    translatedToolCalls.set(callId, {
+      originalName: origName,
+      translatedName: translated.name,
+      cmd: normalizedArgs.CommandLine || '',
+      cwd: normalizedArgs.Cwd || '',
+    });
+    touchStateTimestamp(stateTimestamps.translatedCalls, callId);
+  }
+  return translated;
 }
 
 /**

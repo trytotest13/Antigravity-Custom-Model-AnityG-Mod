@@ -7,9 +7,9 @@ import * as path from 'path';
 import log from 'electron-log';
 import {
   fixParamTypes,
-  translateToolCallToNative,
   formatTranslatedResponse,
   normalizeToolArgs,
+  trackTranslatedToolCall,
   ToolCallArgs,
 } from './utils';
 import {
@@ -293,23 +293,8 @@ export function mapAnthropicToGemini(anthRes: AnthropicResponse, modelName: stri
     } else if (block.type === 'thinking' && block.thinking) {
       parts.push({ text: block.thinking, thought: true });
     } else if (block.type === 'tool_use') {
-      const modelTCIds = modelToolCallIds.get(modelName) || {};
-      modelTCIds[block.name || ''] = block.id || '';
-      modelToolCallIds.set(modelName, modelTCIds);
-      touchStateTimestamp(stateTimestamps.toolCallIds, modelName);
-
       const normalizedInput = normalizeToolArgs(block.name || '', block.input || {});
-      const translated = translateToolCallToNative(block.name || '', normalizedInput);
-      if (translated.name !== block.name) {
-        translated.args = normalizeToolArgs(translated.name, translated.args) as Record<string, unknown>;
-        translatedToolCalls.set(block.id || '', {
-          originalName: block.name || '',
-          translatedName: translated.name,
-          cmd: (normalizedInput.CommandLine as string) || '',
-          cwd: (normalizedInput.Cwd as string) || '',
-        });
-        touchStateTimestamp(stateTimestamps.translatedCalls, block.id || '');
-      }
+      const translated = trackTranslatedToolCall(modelName, block.name || '', normalizedInput, block.id || '');
 
       functionCalls.push({
         functionCall: { name: translated.name, args: translated.args as Record<string, unknown>, id: block.id },
@@ -397,20 +382,7 @@ export function mapAnthropicChunkToGemini(chunk: AnthropicResponse, modelName: s
           args = {};
         }
         args = normalizeToolArgs(tc.name, args) as ToolCallArgs;
-        const modelTCIds = modelToolCallIds.get(modelName) || {};
-        modelTCIds[tc.name] = tc.id;
-        modelToolCallIds.set(modelName, modelTCIds);
-        touchStateTimestamp(stateTimestamps.toolCallIds, modelName);
-        const translated = translateToolCallToNative(tc.name, args);
-        if (translated.name !== tc.name) {
-          translatedToolCalls.set(tc.id, {
-            originalName: tc.name,
-            translatedName: translated.name,
-            cmd: args.CommandLine || '',
-            cwd: args.Cwd || '',
-          });
-          touchStateTimestamp(stateTimestamps.translatedCalls, tc.id);
-        }
+        const translated = trackTranslatedToolCall(modelName, tc.name, args, tc.id);
         return { functionCall: { name: translated.name, args: translated.args as Record<string, unknown>, id: tc.id } };
       });
       activeStreamContexts.delete(streamId);

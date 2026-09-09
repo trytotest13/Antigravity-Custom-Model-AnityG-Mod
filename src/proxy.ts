@@ -120,6 +120,23 @@ function toLegacySlug(model: CustomModel): string {
   );
 }
 
+// Fallback model-list entry when the upstream response can't be merged (was 3 copy-pasted blocks).
+function fallbackModelsMap(models: CustomModel[]): Record<string, unknown> {
+  const mapped: Record<string, unknown> = {};
+  models.forEach((m) => {
+    const slug = toSlug(m);
+    mapped[slug] = {
+      displayName: m.displayName,
+      maxTokens: 1048576,
+      maxOutputTokens: 4096,
+      model: generateModelPlaceholderId(m),
+      apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+      modelProvider: 'MODEL_PROVIDER_GOOGLE',
+    };
+  });
+  return mapped;
+}
+
 // ─── Auto Smart Router ────────────────────────────────────────────────────
 
 /**
@@ -528,8 +545,7 @@ function handleCustomModelRequest(
   // P3-15: Google AI Studio uses dynamic URL construction for streaming vs non-streaming
   // P3-16: Ollama uses URL normalization for default port and endpoint
   if (provider === 'google' || provider === 'ollama') {
-    const providerTranslator = registry.getTranslator(provider);
-    finalUrlStr = registry.getProviderUrl(finalUrlStr, model.externalModelName, isStream, providerTranslator);
+    finalUrlStr = registry.getProviderUrl(finalUrlStr, model.externalModelName, isStream, provider);
   } else if (provider === 'openai' || model.provider === 'custom' || model.provider === 'openrouter') {
     const urlLower = finalUrlStr.toLowerCase();
     if (!urlLower.includes('/chat/completions') && !urlLower.includes('/completions')) {
@@ -585,7 +601,7 @@ function handleCustomModelRequest(
           // 4xx client errors are not retryable on the same model — fall through to next model.
           if (retryCount < MAX_RETRIES && shouldSwitch(apiRes.statusCode).retrySame) {
             log.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
+            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks), 1000 * (retryCount + 1));
             return;
           }
           if (fallbackToNext('Stream API error', String(apiRes.statusCode))) return;
@@ -682,7 +698,7 @@ function handleCustomModelRequest(
           log.warn(
             `[Proxy] Server error ${apiRes.statusCode} for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
           );
-          setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), delay);
+          setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks), delay);
           return;
         }
 
@@ -693,7 +709,7 @@ function handleCustomModelRequest(
           log.warn(
             `[Proxy] Rate limited (429) for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
           );
-          setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), delay);
+          setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks), delay);
           return;
         }
 
@@ -739,7 +755,7 @@ function handleCustomModelRequest(
           if (retryCount < MAX_RETRIES) {
             log.warn(`[Proxy] Parse error for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
             setTimeout(
-              () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1),
+              () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks),
               1000 * (retryCount + 1),
             );
             return;
@@ -760,7 +776,7 @@ function handleCustomModelRequest(
     if (retryCount < MAX_RETRIES) {
       log.warn(`[Proxy] Timeout for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
       setTimeout(
-        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1),
+        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks),
         1000 * (retryCount + 1),
       );
       return;
@@ -780,7 +796,7 @@ function handleCustomModelRequest(
     if (retryCount < MAX_RETRIES && shouldSwitch(undefined, err as Error).retrySame) {
       log.warn(`[Proxy] Network error for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
       setTimeout(
-        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1),
+        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks),
         1000 * (retryCount + 1),
       );
       return;
@@ -1183,18 +1199,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
           googleReq.destroy();
           if (!res.headersSent) {
             const customModels = getRoutableModels();
-            const mappedCustom: Record<string, unknown> = {};
-            customModels.forEach((m) => {
-              const slug = toSlug(m);
-              mappedCustom[slug] = {
-                displayName: m.displayName,
-                maxTokens: 1048576,
-                maxOutputTokens: 4096,
-                model: generateModelPlaceholderId(m),
-                apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
-                modelProvider: 'MODEL_PROVIDER_GOOGLE',
-              };
-            });
+            const mappedCustom = fallbackModelsMap(customModels);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ models: mappedCustom }));
           }
@@ -1356,18 +1361,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
           } catch (err) {
             log.error('[Proxy] Parsing fetchAvailableModels failed, returning custom models:', err);
             const customModels = getRoutableModels();
-            const mappedCustom: Record<string, unknown> = {};
-            customModels.forEach((m) => {
-              const slug = toSlug(m);
-              mappedCustom[slug] = {
-                displayName: m.displayName,
-                maxTokens: 1048576,
-                maxOutputTokens: 4096,
-                model: generateModelPlaceholderId(m),
-                apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
-                modelProvider: 'MODEL_PROVIDER_GOOGLE',
-              };
-            });
+            const mappedCustom = fallbackModelsMap(customModels);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ models: mappedCustom }));
           }

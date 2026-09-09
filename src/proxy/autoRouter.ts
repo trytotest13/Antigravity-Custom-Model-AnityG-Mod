@@ -2,9 +2,14 @@
  * Auto Smart Router.
  *
  * Provides the virtual "Auto (Smart Router)" model: when the IDE routes a
- * request to it, the proxy inspects the Gemini request (images, code, length,
- * tags) and picks the best user-configured custom model for the job, with a
- * fallback chain and local context compression when no window fits.
+ * request to it, the proxy inspects the Gemini request (images, code, math,
+ * length, tool calls) and picks the best user-configured custom model for the
+ * job, with a fallback chain and local context compression when no window fits.
+ *
+ * Classification is a weighted multi-signal score, not a first-match regex:
+ * strong signals (fenced code blocks, error traces, tool calls) dominate,
+ * soft signals (code keywords, file paths, reasoning phrases) accumulate, and
+ * the winner's score is explainable in the reason string the proxy logs.
  *
  * This module is intentionally Electron-free so it can be unit-tested
  * directly. Type-only import of CustomModel keeps the runtime dependency
@@ -25,18 +30,69 @@ const ANSWER_HEADROOM = 2048; // room for the model's reply
 const CHARS_PER_TOKEN = 4; // rough average for code+prose
 const MAX_CHAIN = 4;
 
-const CODE_PATTERN =
-  /```|\b(?:class|def|function|import|export|const|traceback|exception|compile|refactor|regex|stacktrace)\b|=>|;/i;
-
-// Task -> name hints, first match wins. Matched against externalModelName +
-// displayName (lowercased) of the configured models.
+// Task -> name hints, most-specific first. Matched against externalModelName +
+// displayName (lowercased) of the configured models. Index i earns
+// TASK_BASE - i * TASK_STEP points, so earlier (more specific) hints win.
 const FAMILY_HINTS: Record<string, string[]> = {
   code: ['deepseek', 'coder', 'codestral', 'qwen3', 'claude', 'gpt-4o', 'llama-3.3', 'gemini'],
+  reasoning: ['r1', 'reasoner', 'o1-', 'o3-', 'thinking', 'deepseek', 'claude', 'gemini', 'gpt-4o', 'qwen3'],
   vision: ['gemini', 'gpt-4o', 'claude', 'vision', 'llava', 'pixtral'],
   long: ['gemini', 'gpt-4o', 'claude', 'llama-3.3', 'deepseek'],
   quick: ['mini', 'flash', 'nano', 'haiku', '8b', '3b', 'small', 'lite'],
   chat: ['deepseek', 'claude', 'gpt-4o', 'llama', 'qwen', 'gemini'],
 };
+
+const TASK_BASE = 60;
+const TASK_STEP = 10;
+const THINKING_BONUS = 8; // reward real reasoning models for brainy tasks
+const HEALTH_WEIGHT = 12; // points lost per unit of breaker penalty
+const WASTE_STEP = 200_000; // 1 point lost per 200k tokens of unused window
+const WASTE_CAP = 10;
+
+// Strong code signals: essentially unambiguous on their own. One pattern per
+// signal — countMatches weighs per pattern, so alternatives must be split out.
+const CODE_STRONG: RegExp[] = [
+  /```/, // fenced code block
+  /\btraceback\b/i,
+  /\bstack\s?trace\b|\bstacktrace\b/i,
+  /\b(?:TypeError|ReferenceError|SyntaxError|NameError|KeyError|IndexError|AttributeError)\b/,
+  /\bNullPointerException\b|\bSegmentationFault\b|\bpanic:/,
+  /\b(?:compile|compilation|build|lint)\s+(?:error|failed|fails)\b/i,
+];
+
+// Soft code signals: each adds weight; a single one is suggestive, several are sure.
+const CODE_SOFT: RegExp[] = [
+  /\b(?:function|method|class|variable|array)\b/i,
+  /\b(?:api|endpoint|regex|script|library|framework|compiler|runtime|snippet|algorithm)\b/i,
+  /\b(?:debug|refactor|implement|optimize)\b/i,
+  /\bfix(?:es|ing)?\b/i,
+  /\bunit\s?tests?\b|\btest\s+cases?\b/i,
+  /\b(?:def |class |import |export |const |let |var |async |await )\b/,
+  /\b(?:#include|public |private |fn |func |package )\b/,
+  /=>/,
+  /;\s*$|\{\s*$/m,
+  /\b[\w-]+\.(?:ts|tsx|js|jsx|mjs|py|java|c|cpp|h|go|rs|rb|php|cs|swift|kt|sql|sh|yml|yaml|json)\b/i,
+  /\b(?:src|lib|app|components?|utils?|tests?|services?|controllers?)\/[\w/.-]+\.\w+/i,
+];
+
+// Reasoning / math signals: prefer models that think.
+const REASONING_SOFT: RegExp[] = [
+  /\bstep[- ]by[- ]step\b/i,
+  /\b(?:derive|proof|prove)\b/i,
+  /\bexplain\s+why\b/i,
+  /\b(?:reason|think)\s+(?:this\s+)?(?:through|it\s+through)\b/i,
+  /\bwork\s+through\b/i,
+  /\b(?:calculate|compute|solve)\b/i,
+  /\b(?:equation|theorem|probability|permutation|combinatoric(?:s)?)\b/i,
+  /\b(?:time|space)\s+complexity\b|\bbig[- ]?o\b/i,
+  /\btrade[- ]?offs?\b/i,
+  /\barchitecture\b/i,
+  /\bdesign\s+(?:decision|pattern|review)\b/i,
+  /\bpros\s+and\s+cons\b/i,
+  /\broot\s+cause\b/i,
+  /\d+\s*[+\-*/^]\s*\d+/,
+  /\\frac|\\int|\\sum|\\lim/,
+];
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -69,7 +125,7 @@ export function buildAutoModel(): CustomModel {
     name: 'models/' + AUTO_EXTERNAL_NAME,
     displayName: AUTO_DISPLAY_NAME,
     description:
-      'Routes each request to the best model you configured (vision / code / long context / quick), with automatic fallback.',
+      'Routes each request to the best model you configured (vision / code / reasoning / long context / quick), with automatic fallback.',
     provider: 'custom',
     apiKey: 'none',
     apiUrl: 'http://127.0.0.1/' + AUTO_EXTERNAL_NAME,
@@ -103,36 +159,43 @@ export function estimateTokens(body: AutoGeminiBody): number {
 
 // ─── Task classification ──────────────────────────────────────────────────
 
-function allText(body: AutoGeminiBody): string {
-  const parts: string[] = [];
-  if (body.systemInstruction?.parts) {
-    for (const p of body.systemInstruction.parts) {
-      if (typeof p.text === 'string') parts.push(p.text);
-    }
-  }
+function allParts(body: AutoGeminiBody): AutoGeminiPart[] {
+  const parts: AutoGeminiPart[] = [];
+  if (body.systemInstruction?.parts) parts.push(...body.systemInstruction.parts);
   for (const c of body.contents || []) {
-    for (const p of c.parts || []) {
-      if (typeof p.text === 'string') parts.push(p.text);
-    }
+    if (c.parts) parts.push(...c.parts);
   }
-  return parts.join(' ');
+  return parts;
+}
+
+function allText(body: AutoGeminiBody): string {
+  return allParts(body)
+    .map((p) => (typeof p.text === 'string' ? p.text : ''))
+    .join(' ');
 }
 
 function hasImages(body: AutoGeminiBody): boolean {
-  const check = (p: AutoGeminiPart): boolean => {
+  return allParts(body).some((p) => {
     if (p.inlineData) return true;
     const mime = (p.fileData?.mimeType || '').toLowerCase();
     return mime.startsWith('image/');
-  };
-  if (body.systemInstruction?.parts?.some(check)) return true;
-  for (const c of body.contents || []) {
-    if ((c.parts || []).some(check)) return true;
+  });
+}
+
+function hasToolCalls(body: AutoGeminiBody): boolean {
+  return allParts(body).some((p) => 'functionCall' in p || 'functionResponse' in p);
+}
+
+function countMatches(text: string, patterns: RegExp[]): number {
+  let hits = 0;
+  for (const re of patterns) {
+    if (re.test(text)) hits++;
   }
-  return false;
+  return hits;
 }
 
 export interface RequestClass {
-  task: 'vision' | 'code' | 'long' | 'quick' | 'chat' | 'forced';
+  task: 'vision' | 'code' | 'reasoning' | 'long' | 'quick' | 'chat' | 'forced';
   reason: string;
   forcedModel?: string;
 }
@@ -146,10 +209,27 @@ export function classifyRequest(body: AutoGeminiBody): RequestClass {
   if (text.includes('#:vision')) return { task: 'vision', reason: 'tag #:vision' };
 
   if (hasImages(body)) return { task: 'vision', reason: 'image part in request' };
-  if (CODE_PATTERN.test(text)) return { task: 'code', reason: 'code patterns detected' };
-  if (text.length > 8000) return { task: 'long', reason: 'long input (>8k chars)' };
-  if (text.length < 200) return { task: 'quick', reason: 'short input' };
-  return { task: 'chat', reason: 'default' };
+
+  // Weighted signals: tool calls are agent traffic (always code-shaped);
+  // fenced blocks / error traces are decisive; keywords only suggest.
+  let codeScore = countMatches(text, CODE_STRONG) * 3 + countMatches(text, CODE_SOFT) * 1.5;
+  if (hasToolCalls(body)) codeScore += 3;
+  const reasoningScore = countMatches(text, REASONING_SOFT) * 1.5;
+  const len = text.length;
+
+  if (codeScore >= 3) {
+    const why: string[] = [];
+    if (hasToolCalls(body)) why.push('tool call in request');
+    if (/```/.test(text)) why.push('code block');
+    if (countMatches(text, CODE_STRONG) > 0) why.push('error/trace patterns');
+    if (why.length === 0) why.push(`${countMatches(text, CODE_SOFT)} code signals`);
+    return { task: 'code', reason: 'code detected (' + why.join(', ') + ')' };
+  }
+  if (reasoningScore >= 3) return { task: 'reasoning', reason: 'reasoning/math request' };
+  if (len > 8000) return { task: 'long', reason: 'long input (>8k chars)' };
+  if (len < 200) return { task: 'quick', reason: 'short input' };
+  if (codeScore >= 1.5) return { task: 'code', reason: 'code keywords detected' };
+  return { task: 'chat', reason: 'general chat' };
 }
 
 // ─── Model ranking ────────────────────────────────────────────────────────
@@ -158,59 +238,123 @@ function nameOf(m: CustomModel): string {
   return (m.externalModelName + ' ' + m.displayName).toLowerCase();
 }
 
-function capOf(m: CustomModel): { maxTokens: number; supportsImages: boolean } {
+function capOf(m: CustomModel): { maxTokens: number; supportsImages: boolean; isThinking: boolean } {
   const cap = detectModelCapabilities(m, true);
-  return { maxTokens: cap.maxTokens, supportsImages: cap.supportsImages };
+  return { maxTokens: cap.maxTokens, supportsImages: cap.supportsImages, isThinking: cap.isThinking };
 }
 
-/** Earliest matching hint wins (hints are ordered most-specific first). */
-function taskScore(m: CustomModel, task: string): number {
+/**
+ * Additive routing score for one model against one task. Higher wins.
+ * The `bits` describe what earned the points, for the reason string.
+ */
+function scoreFor(
+  m: CustomModel,
+  task: string,
+  need: number,
+): { score: number; bits: string[] } {
   const n = nameOf(m);
+  const cap = capOf(m);
   const hints = FAMILY_HINTS[task] || [];
+  const bits: string[] = [];
+  let score = 0;
+
+  // 1. Task-family name fit: 60 for the most-specific hint, sliding to 0.
+  const QUICK_HINTS = new Set(['mini', 'flash', 'nano', 'haiku', '8b', '3b', 'small', 'lite']);
   for (let i = 0; i < hints.length; i++) {
-    if (n.includes(hints[i])) return i;
+    if (n.includes(hints[i])) {
+      score += TASK_BASE - i * TASK_STEP;
+      bits.push(QUICK_HINTS.has(hints[i]) ? 'fast model' : `${hints[i]} family`);
+      break;
+    }
   }
-  return hints.length; // no hint match -> worst score
+
+  // 2. Actual capability: thinking models get extra credit on brainy tasks.
+  if ((task === 'code' || task === 'reasoning' || task === 'long') && cap.isThinking) {
+    score += THINKING_BONUS;
+    bits.push('thinking');
+  }
+
+  // 3. Health: the breaker's penalty (failures, slow EWMA) pulls a model down.
+  score -= smartHealth.penalty(m.name) * HEALTH_WEIGHT;
+
+  // 4. Right-sizing: a window much bigger than needed is a mild negative so
+  //    cheap/small models win ties, but it can never beat task fit.
+  const waste = Math.max(0, cap.maxTokens - need);
+  score -= Math.min(WASTE_CAP, waste / WASTE_STEP);
+
+  return { score, bits };
 }
 
+/** Normalizes a forced #model: tag for forgiving matching (case, prefixes, separators). */
+function normalizeTag(tag: string): string {
+  return tag
+    .toLowerCase()
+    .replace(/^models\//, '')
+    .replace(/[_\s]+/g, '-');
+}
+
+function matchForced(models: CustomModel[], tag: string): CustomModel | undefined {
+  const t = normalizeTag(tag);
+  return models.find((m) => {
+    const ext = normalizeTag(m.externalModelName);
+    const full = normalizeTag(nameOf(m));
+    const nm = normalizeTag(m.name);
+    return ext === t || full.includes(t) || nm.endsWith('/' + t);
+  });
+}
+
+/**
+ * Ranks the configured models for this request and returns the fallback chain.
+ * The first entry is the primary pick; the rest are tried on failure.
+ */
 export function pickChain(models: CustomModel[], body: AutoGeminiBody): CustomModel[] {
+  return explainRoute(models, body).chain;
+}
+
+interface RouteExplanation {
+  chain: CustomModel[];
+  reason: string;
+}
+
+function explainRoute(models: CustomModel[], body: AutoGeminiBody): RouteExplanation {
   const cls = classifyRequest(body);
 
   if (cls.task === 'forced' && cls.forcedModel) {
-    const tag = cls.forcedModel.toLowerCase();
-    const hit = models.find(
-      (m) =>
-        m.externalModelName.toLowerCase() === tag ||
-        nameOf(m).includes(tag) ||
-        m.name.toLowerCase().endsWith('/' + tag),
-    );
-    return hit ? [hit] : [];
+    const hit = matchForced(models, cls.forcedModel);
+    return { chain: hit ? [hit] : [], reason: `${cls.reason} ${cls.forcedModel}` };
   }
 
   const need = estimateTokens(body);
   let cands = models.filter((m) => !isAutoModel(m));
 
+  // Hard requirement: vision tasks only go to models that can see.
   if (cls.task === 'vision') {
     const seers = cands.filter((m) => capOf(m).supportsImages);
     if (seers.length > 0) cands = seers;
   }
 
-  if (cands.length === 0) return [];
+  if (cands.length === 0) return { chain: [], reason: cls.reason };
 
+  // Prefer models whose window actually fits; fall back to everyone only if
+  // nothing does (planAutoRoute will compress and re-pick in that case).
   const fitting = cands.filter((m) => capOf(m).maxTokens >= need);
   const pool0 = fitting.length > 0 ? fitting : cands;
   // Breaker is advisory: skip open models unless that would leave nothing to try.
   const usable = pool0.filter((m) => !smartHealth.isOpen(m.name));
   const pool = usable.length > 0 ? usable : pool0;
 
-  const waste = (m: CustomModel): number => capOf(m).maxTokens - need;
-  const byFit = (a: CustomModel, b: CustomModel): number =>
-    taskScore(a, cls.task) - taskScore(b, cls.task) ||
-    smartHealth.penalty(a.name) - smartHealth.penalty(b.name) ||
-    waste(a) - waste(b) ||
-    a.displayName.localeCompare(b.displayName);
+  const scored = pool.map((m) => ({ m, ...scoreFor(m, cls.task, need) }));
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      capOf(a.m).maxTokens - capOf(b.m).maxTokens ||
+      a.m.displayName.localeCompare(b.m.displayName),
+  );
 
-  return [...pool].sort(byFit).slice(0, MAX_CHAIN);
+  const chain = scored.slice(0, MAX_CHAIN).map((s) => s.m);
+  const win = scored[0];
+  const why = win.bits.length > 0 ? ` (${win.bits.slice(0, 3).join(', ')})` : '';
+  return { chain, reason: `${cls.reason}; ${win.m.displayName}${why}` };
 }
 
 // ─── Local compression (last resort, no extra API call) ───────────────────
@@ -253,21 +397,21 @@ export function planAutoRoute(models: CustomModel[], body: AutoGeminiBody): Rout
   let tokens = estimateTokens(work);
   let compressed = false;
 
-  let chain = pickChain(models, work);
+  let picked = explainRoute(models, work);
 
   // Nothing fits any window -> compress older turns locally and retry.
   const biggest = Math.max(0, ...models.filter((m) => !isAutoModel(m)).map((m) => capOf(m).maxTokens));
-  if (chain.length > 0 && tokens > biggest) {
+  if (picked.chain.length > 0 && tokens > biggest) {
     work = compressContents(work);
     tokens = estimateTokens(work);
     compressed = true;
-    chain = pickChain(models, work);
+    picked = explainRoute(models, work);
   }
 
   return {
-    chain,
+    chain: picked.chain,
     task: cls.task,
-    reason: `${cls.reason}${compressed ? ' + compressed context' : ''}`,
+    reason: `${picked.reason}${compressed ? ' + compressed context' : ''}`,
     tokens,
     compressed,
     body: work,

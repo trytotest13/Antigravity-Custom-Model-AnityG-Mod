@@ -58,8 +58,13 @@ Write-Host "   OK" -ForegroundColor Green
 # 2. Start standalone proxy, read back the actual port (falls back if 50999 busy)
 Write-Host "[2/5] Starting standalone proxy..." -ForegroundColor Yellow
 $PortFile = Join-Path $env:USERPROFILE ".gemini\antigravity\active_port"
+# Proxy console output goes to a log file so routing decisions and errors
+# can be inspected later (the hidden window has no console to read).
+$ProxyLog = Join-Path $env:USERPROFILE ".gemini\antigravity\proxy.log"
+$ProxyErr = Join-Path $env:USERPROFILE ".gemini\antigravity\proxy.err.log"
 if (Test-Path $PortFile) { Remove-Item $PortFile -Force -ErrorAction SilentlyContinue }
-Start-Process -FilePath "node" -ArgumentList "`"$ProxyJs`"" -WorkingDirectory $ProjectDir -WindowStyle Hidden
+Start-Process -FilePath "node" -ArgumentList "`"$ProxyJs`"" -WorkingDirectory $ProjectDir -WindowStyle Hidden `
+    -RedirectStandardOutput $ProxyLog -RedirectStandardError $ProxyErr
 $port = $null
 for ($i = 0; $i -lt 30 -and -not $port; $i++) {
     Start-Sleep -Milliseconds 500

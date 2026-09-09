@@ -13,6 +13,8 @@ import * as openai from './translators/openai';
 import * as anthropic from './translators/anthropic';
 import * as google from './translators/google';
 import * as ollama from './translators/ollama';
+import { getGoogleApiUrl } from './translators/google';
+import { getOllamaApiUrl } from './translators/ollama';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -26,8 +28,6 @@ export interface TranslatorModule {
   mapGeminiToGoogle?: (body: unknown, modelName: string) => unknown;
   mapGoogleToGemini?: (res: unknown, modelName: string) => unknown;
   mapGoogleChunkToGemini?: (chunk: unknown, modelName: string) => unknown | null;
-  getGoogleApiUrl?: (baseUrl: string, modelName: string, isStream: boolean) => string;
-  [key: string]: unknown;
 }
 
 export interface ProviderHeaders {
@@ -44,50 +44,50 @@ export interface ProviderHeaders {
 // ─── Registry State ───────────────────────────────────────────────────────
 
 const translators = new Map<string, TranslatorModule>([
-  ['openai', openai as unknown as TranslatorModule],
-  ['ollama', ollama as unknown as TranslatorModule],
-  ['anthropic', anthropic as unknown as TranslatorModule],
-  ['google', google as unknown as TranslatorModule],
+  ['openai', openai],
+  ['ollama', ollama],
+  ['anthropic', anthropic],
+  ['google', google],
 ]);
 
 // Single source of truth for transport compatibility.
 export type ProviderFamily = 'openai' | 'anthropic' | 'google' | 'unknown';
 
+const OPENAI_FAMILY = new Set([
+  'openai',
+  'ollama',
+  'openrouter',
+  'custom',
+  'groq',
+  'mistral',
+  'cerebras',
+  'nvidia',
+  'opencode',
+  'codestral',
+]);
+const ANTHROPIC_FAMILY = new Set([
+  'anthropic',
+  'deepseek',
+  'kimi',
+  'fireworks',
+  'lmstudio',
+  'llamacpp',
+  'wafer',
+  'zai',
+]);
+
 export function providerFamily(provider: string): ProviderFamily {
-  switch (provider) {
-    case 'openai':
-    case 'ollama':
-    case 'openrouter':
-    case 'custom':
-    case 'groq':
-    case 'mistral':
-    case 'cerebras':
-    case 'nvidia':
-    case 'opencode':
-    case 'codestral':
-      return 'openai';
-    case 'anthropic':
-    case 'deepseek':
-    case 'kimi':
-    case 'fireworks':
-    case 'lmstudio':
-    case 'llamacpp':
-    case 'wafer':
-    case 'zai':
-      return 'anthropic';
-    case 'google':
-      return 'google';
-    default:
-      return 'unknown';
-  }
+  if (OPENAI_FAMILY.has(provider)) return 'openai';
+  if (ANTHROPIC_FAMILY.has(provider)) return 'anthropic';
+  if (provider === 'google') return 'google';
+  return 'unknown';
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
 export function getTranslator(provider: string): TranslatorModule | null {
-  if (provider === 'ollama') return translators.get('ollama') || null;
   const family = providerFamily(provider);
-  if (family === 'openai') return translators.get('openai') || null;
+  if (family === 'openai') return translators.get(provider === 'ollama' ? 'ollama' : 'openai') || null;
   if (family === 'anthropic') return translators.get('anthropic') || null;
   if (family === 'google') return translators.get('google') || null;
   return translators.get('openai') || null;
@@ -102,12 +102,6 @@ export function translateRequest(provider: string, geminiBody: unknown, modelNam
   if (family === 'anthropic')
     return t?.mapGeminiToAnthropic ? t.mapGeminiToAnthropic(geminiBody, modelName) : geminiBody;
 
-  // Generic: try mapGeminiTo<Provider> convention
-  const fnName = `mapGeminiTo${provider.charAt(0).toUpperCase() + provider.slice(1)}`;
-  if (t && typeof t[fnName] === 'function') {
-    return (t[fnName] as (...args: unknown[]) => unknown)(geminiBody, modelName);
-  }
-
   log.warn(`[TranslatorRegistry] No request translator for provider "${provider}", passing through`);
   return geminiBody;
 }
@@ -121,11 +115,6 @@ export function translateResponse(provider: string, providerRes: unknown, modelN
   if (family === 'anthropic')
     return t?.mapAnthropicToGemini ? t.mapAnthropicToGemini(providerRes, modelName) : providerRes;
 
-  const fnName = `map${provider.charAt(0).toUpperCase() + provider.slice(1)}ToGemini`;
-  if (t && typeof t[fnName] === 'function') {
-    return (t[fnName] as (...args: unknown[]) => unknown)(providerRes, modelName);
-  }
-
   log.warn(`[TranslatorRegistry] No response translator for provider "${provider}", passing through`);
   return providerRes;
 }
@@ -138,11 +127,6 @@ export function translateStreamChunk(provider: string, chunk: unknown, modelName
   if (family === 'openai') return t?.mapOpenAIChunkToGemini ? t.mapOpenAIChunkToGemini(chunk, modelName) : null;
   if (family === 'anthropic')
     return t?.mapAnthropicChunkToGemini ? t.mapAnthropicChunkToGemini(chunk, modelName) : null;
-
-  const fnName = `map${provider.charAt(0).toUpperCase() + provider.slice(1)}ChunkToGemini`;
-  if (t && typeof t[fnName] === 'function') {
-    return (t[fnName] as (...args: unknown[]) => unknown)(chunk, modelName);
-  }
 
   return null;
 }
@@ -173,19 +157,8 @@ export function supportsStreaming(provider: string): boolean {
 
 // ─── URL Helpers ──────────────────────────────────────────────────────────
 
-export function getProviderUrl(
-  baseUrl: string,
-  modelName: string,
-  isStream: boolean,
-  translator: TranslatorModule | null,
-): string {
-  // Google AI Studio: dynamic streaming vs non-streaming URL
-  if (translator && typeof translator['getGoogleApiUrl'] === 'function') {
-    return (translator['getGoogleApiUrl'] as (...args: unknown[]) => string)(baseUrl, modelName, isStream);
-  }
-  // Ollama: normalize to standard /v1/chat/completions endpoint
-  if (translator && typeof translator['getOllamaApiUrl'] === 'function') {
-    return (translator['getOllamaApiUrl'] as (...args: unknown[]) => string)(baseUrl);
-  }
+export function getProviderUrl(baseUrl: string, modelName: string, isStream: boolean, provider: string): string {
+  if (provider === 'google' || providerFamily(provider) === 'google') return getGoogleApiUrl(baseUrl, modelName, isStream);
+  if (provider === 'ollama') return getOllamaApiUrl(baseUrl);
   return baseUrl;
 }

@@ -10,6 +10,7 @@ import {
   translateToolCallToNative,
   formatTranslatedResponse,
   normalizeToolArgs,
+  trackTranslatedToolCall,
   ToolCallArgs,
   TranslatedCallInfo,
 } from './utils';
@@ -408,21 +409,7 @@ export function mapOpenAIToGemini(openAiRes: OpenAIResponse, modelName: string):
         args = {};
       }
       args = normalizeToolArgs(tc.function.name, args) as ToolCallArgs;
-      const modelTCIds = modelToolCallIds.get(modelName) || {};
-      modelTCIds[tc.function.name] = tc.id;
-      modelToolCallIds.set(modelName, modelTCIds);
-      touchStateTimestamp(stateTimestamps.toolCallIds, modelName);
-      const translated = translateToolCallToNative(tc.function.name, args);
-      if (translated.name !== tc.function.name) {
-        translated.args = normalizeToolArgs(translated.name, translated.args) as Record<string, unknown>;
-        translatedToolCalls.set(tc.id, {
-          originalName: tc.function.name,
-          translatedName: translated.name,
-          cmd: args.CommandLine || '',
-          cwd: args.Cwd || '',
-        });
-        touchStateTimestamp(stateTimestamps.translatedCalls, tc.id);
-      }
+      const translated = trackTranslatedToolCall(modelName, tc.function.name, args, tc.id);
       return { functionCall: { name: translated.name, args: translated.args as Record<string, unknown>, id: tc.id } };
     });
     return {
@@ -525,20 +512,7 @@ export function mapOpenAIChunkToGemini(chunk: OpenAIResponse, modelName: string)
           args = {};
         }
         args = normalizeToolArgs(tc.name, args) as ToolCallArgs;
-        const modelTCIds = modelToolCallIds.get(modelName) || {};
-        modelTCIds[tc.name] = tc.id;
-        modelToolCallIds.set(modelName, modelTCIds);
-        touchStateTimestamp(stateTimestamps.toolCallIds, modelName);
-        const translated = translateToolCallToNative(tc.name, args);
-        if (translated.name !== tc.name) {
-          translatedToolCalls.set(tc.id, {
-            originalName: tc.name,
-            translatedName: translated.name,
-            cmd: args.CommandLine || '',
-            cwd: args.Cwd || '',
-          });
-          touchStateTimestamp(stateTimestamps.translatedCalls, tc.id);
-        }
+        const translated = trackTranslatedToolCall(modelName, tc.name, args, tc.id);
         return { functionCall: { name: translated.name, args: translated.args as Record<string, unknown>, id: tc.id } };
       });
       activeStreamContexts.delete(streamId);
@@ -573,21 +547,7 @@ export function mapOpenAIChunkToGemini(chunk: OpenAIResponse, modelName: string)
         args = {};
       }
       args = normalizeToolArgs(tc.name, args) as ToolCallArgs;
-      const modelTCIds = modelToolCallIds.get(modelName) || {};
-      modelTCIds[tc.name] = tc.id;
-      modelToolCallIds.set(modelName, modelTCIds);
-      touchStateTimestamp(stateTimestamps.toolCallIds, modelName);
-      const translated = translateToolCallToNative(tc.name, args);
-      if (translated.name !== tc.name) {
-        translated.args = normalizeToolArgs(translated.name, translated.args) as Record<string, unknown>;
-        translatedToolCalls.set(tc.id, {
-          originalName: tc.name,
-          translatedName: translated.name,
-          cmd: args.CommandLine || '',
-          cwd: args.Cwd || '',
-        });
-        touchStateTimestamp(stateTimestamps.translatedCalls, tc.id);
-      }
+      const translated = trackTranslatedToolCall(modelName, tc.name, args, tc.id);
       return { functionCall: { name: translated.name, args: translated.args as Record<string, unknown>, id: tc.id } };
     });
     activeStreamContexts.delete(streamId);

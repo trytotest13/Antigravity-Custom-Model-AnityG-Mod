@@ -102,6 +102,24 @@ describe('classifyRequest', () => {
   it('#:code tag forces code task over other signals', () => {
     expect(classifyRequest(textBody('draw me a picture #:code')).task).toBe('code');
   });
+
+  it('detects reasoning/math requests', () => {
+    const cls = classifyRequest(textBody('prove that the sum of two odds is even, step by step'));
+    expect(cls.task).toBe('reasoning');
+  });
+
+  it('does not misread short small talk as code', () => {
+    expect(classifyRequest(textBody('hi there!')).task).toBe('quick');
+  });
+
+  it('treats tool-call parts as code-shaped agent traffic', () => {
+    const body = {
+      contents: [
+        { role: 'user', parts: [{ text: 'continue' }, { functionCall: { name: 'run_command', args: {} } }] },
+      ],
+    };
+    expect(classifyRequest(body).task).toBe('code');
+  });
 });
 
 // ─── Estimation ───────────────────────────────────────────────────────────
@@ -160,6 +178,23 @@ describe('pickChain', () => {
   it('excludes the auto model itself from candidates', () => {
     const chain = pickChain([...models, buildAutoModel()], textBody('hi'));
     expect(chain.every((m) => !isAutoModel(m))).toBe(true);
+  });
+
+  it('prefers a reasoning model for reasoning tasks', () => {
+    const r1 = mk('deepseek-r1');
+    const chain = pickChain([deepseek, r1], textBody('solve this proof step by step'));
+    expect(chain[0]).toBe(r1);
+  });
+
+  it('matches #model: tags with loose separators', () => {
+    const chain = pickChain(models, textBody('#model:claude_sonnet_4 hello'));
+    expect(chain).toEqual([claude]);
+  });
+
+  it('explains the pick in the plan reason', () => {
+    const plan = planAutoRoute(models, textBody('```js\nconst x = 1;\n```\nrefactor this'));
+    expect(plan.reason).toContain('deepseek-chat');
+    expect(plan.reason).toContain('code');
   });
 });
 
