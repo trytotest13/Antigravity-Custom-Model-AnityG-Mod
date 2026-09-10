@@ -1,0 +1,32 @@
+{
+  "name": "models",
+  "displayName": "AnityG Mod — Model Manager",
+  "description": "Add / manage custom models for the AnityG-Mod proxy. Adds a status-bar button and command that open the model dashboard inside the IDE, and auto-starts the proxy when the IDE launches.",
+  "version": "0.1.0",
+  "publisher": "anityg",
+  "license": "MIT",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "anitygModels.openDashboard",
+        "title": "AnityG Mod: Add / Manage Custom Models (Dashboard)",
+        "category": "AnityG Mod"
+      },
+      {
+        "command": "anitygModels.startProxy",
+        "title": "AnityG Mod: Start Proxy (if not running)",
+        "category": "AnityG Mod"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "anitygModels.openDashboard",
+        "key": "ctrl+alt+m"
+      }
+    ]
+  }
+}

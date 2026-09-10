@@ -46,7 +46,7 @@ if (-not (Test-Path $DistProxy)) {
 }
 
 # 1. Close IDE + old proxy
-Write-Host "[1/5] Closing Antigravity IDE and old proxy..." -ForegroundColor Yellow
+Write-Host "[1/6] Closing Antigravity IDE and old proxy..." -ForegroundColor Yellow
 Stop-Process -Name "Antigravity IDE" -Force -ErrorAction SilentlyContinue
 Stop-Process -Name "Antigravity" -Force -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
@@ -56,7 +56,7 @@ Start-Sleep -Seconds 3
 Write-Host "   OK" -ForegroundColor Green
 
 # 2. Start standalone proxy, read back the actual port (falls back if 50999 busy)
-Write-Host "[2/5] Starting standalone proxy..." -ForegroundColor Yellow
+Write-Host "[2/6] Starting standalone proxy..." -ForegroundColor Yellow
 $PortFile = Join-Path $env:USERPROFILE ".gemini\antigravity\active_port"
 # Proxy console output goes to a log file so routing decisions and errors
 # can be inspected later (the hidden window has no console to read).
@@ -75,7 +75,7 @@ $ProxyUrl = "http://127.0.0.1:$port"
 Write-Host "   OK - proxy at $ProxyUrl" -ForegroundColor Green
 
 # 3. Point the IDE at the proxy via jetski.cloudCodeUrl (backup once)
-Write-Host "[3/5] Writing jetski.cloudCodeUrl setting..." -ForegroundColor Yellow
+Write-Host "[3/6] Writing jetski.cloudCodeUrl setting..." -ForegroundColor Yellow
 $SettingsPath = Join-Path $env:APPDATA "Antigravity IDE\User\settings.json"
 $SettingsBak = "$SettingsPath.anityg.bak"
 New-Item -ItemType Directory -Path (Split-Path $SettingsPath) -Force | Out-Null
@@ -110,18 +110,84 @@ $settings | Add-Member -NotePropertyName "jetski.cloudCodeUrl" -NotePropertyValu
 Write-Host "   OK - $SettingsPath -> $ProxyUrl" -ForegroundColor Green
 
 # 4. Seed custom_models.json if missing (proxy also creates a default)
-Write-Host "[4/5] Checking custom models config..." -ForegroundColor Yellow
+Write-Host "[4/6] Checking custom models config..." -ForegroundColor Yellow
 $ModelsPath = Join-Path $env:USERPROFILE ".gemini\antigravity\custom_models.json"
 if (Test-Path $ModelsPath) { Write-Host "   OK - found $ModelsPath" -ForegroundColor Green }
 else { Write-Host "   NOTE - none yet; proxy creates a template on first request. Edit $ModelsPath to add models." -ForegroundColor Gray }
 
-# 5. Restart IDE
-Write-Host "[5/5] Starting Antigravity IDE..." -ForegroundColor Yellow
+# 5. Install the AnityG IDE extension (status-bar button + auto-start proxy)
+Write-Host "[5/6] Installing AnityG IDE extension (Models button in status bar)..." -ForegroundColor Yellow
+$ExtSrc = Join-Path $ProjectDir "ide-extension"
+if (Test-Path (Join-Path $ExtSrc "extension.js")) {
+    $ExtId = "anityg.models-0.1.0"
+    $ExtDir = Join-Path $env:USERPROFILE ".antigravity-ide\extensions\$ExtId"
+    New-Item -ItemType Directory -Path $ExtDir -Force | Out-Null
+    Copy-Item (Join-Path $ExtSrc "package.json") $ExtDir -Force
+    Copy-Item (Join-Path $ExtSrc "extension.js") $ExtDir -Force
+    # marker: lets the extension find + auto-start the proxy
+    [IO.File]::WriteAllText((Join-Path $ExtDir "moddir.txt"), $ProjectDir)
+    $RegPath = Join-Path $env:USERPROFILE ".antigravity-ide\extensions\extensions.json"
+    $RegBak = "$RegPath.anityg.bak"
+    $entries = @()
+    if (Test-Path $RegPath) {
+        if (-not (Test-Path $RegBak)) { Copy-Item $RegPath $RegBak -Force }
+        try { $entries = Get-Content $RegPath -Raw | ConvertFrom-Json } catch { $entries = @() }
+    }
+    if (-not ($entries | Where-Object { $_.identifier.id -eq "anityg.models" })) {
+        $loc = "/" + ($ExtDir -replace "\\\", "/")
+        $meta = [ordered]@{
+            installedTimestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            source = "gallery"; publisherDisplayName = "anityg"; targetPlatform = "universal"
+            isApplicationScoped = $false; isMachineScoped = $false; isBuiltin = $false
+            pinned = $false; preRelease = $false; private = $false
+        }
+        $entry = [ordered]@{
+            identifier = [ordered]@{ id = "anityg.models" }
+            version = "0.1.0"
+            location = [ordered]@{ "`$mid" = 1; path = $loc; scheme = "file" }
+            relativeLocation = $ExtId
+            metadata = $meta
+        }
+        $entries = @($entries) + $entry
+        ($entries | ConvertTo-Json -Depth 10) | Set-Content $RegPath -Encoding UTF8
+    }
+    Write-Host "   OK - button + Ctrl+Alt+M open the dashboard inside the IDE" -ForegroundColor Green
+
+    # Desktop shortcut "AnityG Dashboard" (double-click = open dashboard, starts proxy if needed)
+    try {
+        if (-not (Test-Path (Join-Path $ProjectDir "icon.ico"))) {
+            Add-Type -AssemblyName System.Drawing
+            $png = [System.Drawing.Image]::FromFile((Join-Path $ProjectDir "icon.png"))
+            $sz = 256; if ($png.Width -lt $sz) { $sz = $png.Width }
+            $bmp = New-Object System.Drawing.Bitmap($png, $sz, $sz)
+            $ico = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+            $fs = [System.IO.File]::Create((Join-Path $ProjectDir "icon.ico"))
+            $ico.Save($fs); $fs.Close(); $png.Dispose(); $bmp.Dispose()
+        }
+        $ws = New-Object -ComObject WScript.Shell
+        $lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) "AnityG Dashboard.lnk"))
+        $lnk.TargetPath = "wscript.exe"
+        $lnk.Arguments = '"' + (Join-Path $ProjectDir "open-dashboard-silent.vbs") + '"'
+        $lnk.WorkingDirectory = $ProjectDir
+        $lnk.IconLocation = (Join-Path $ProjectDir "icon.ico") + ",0"
+        $lnk.Description = "AnityG Mod: open the model dashboard (starts proxy if needed)"
+        $lnk.Save()
+        Write-Host "   OK - desktop shortcut 'AnityG Dashboard' refreshed" -ForegroundColor Green
+    } catch {
+        Write-Host "   WARN - could not create desktop shortcut: $_" -ForegroundColor Gray
+    }
+} else {
+    Write-Host "   SKIP - ide-extension/ not found in project" -ForegroundColor Gray
+}
+
+# 6. Restart IDE
+Write-Host "[6/6] Starting Antigravity IDE..." -ForegroundColor Yellow
 Start-Process -FilePath $IdeExe
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  DONE - proxy running, IDE pointed at it." -ForegroundColor Green
 Write-Host "  Proxy: $ProxyUrl (proxy-standalone.js)" -ForegroundColor Gray
+Write-Host "  Add models: IDE status bar 'AnityG Models' / Ctrl+Alt+M / browser $ProxyUrl/dashboard" -ForegroundColor Gray
 Write-Host "  Models: $ModelsPath" -ForegroundColor Gray
 Write-Host "  Setting backed up to: $SettingsBak" -ForegroundColor Gray
 Write-Host "  Re-run install.bat after IDE updates." -ForegroundColor Gray

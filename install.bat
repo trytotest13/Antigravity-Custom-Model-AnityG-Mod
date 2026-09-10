@@ -103,11 +103,11 @@ echo.
 echo ============================================
 echo   DONE - Antigravity is running AnityG-Mod!
 echo.
-echo   Old app: add models in Settings ^> Add Model.
-echo   New IDE 2.5.x: edit %%USERPROFILE%%\.gemini\antigravity\custom_models.json
-echo   ^(no Settings UI on the new packaging yet^).
+echo   Add models: click "AnityG Models" in the IDE status bar
+echo   ^(or Ctrl+Alt+M, or browser http://127.0.0.1:50999/dashboard^)
 echo   - "Auto (Smart Router)" shows up automatically
 echo     and picks the right model per request
+echo   - The IDE extension also auto-starts the proxy
 echo.
 echo   Re-run install.bat after every Antigravity update.
 echo ============================================

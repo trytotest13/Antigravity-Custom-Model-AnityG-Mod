@@ -70,6 +70,9 @@ import * as registry from './proxy/registry';
 
 // Auto Smart Router: virtual model that picks the best configured model per request
 import { buildAutoModel, isAutoModel, planAutoRoute, type AutoGeminiBody } from './proxy/autoRouter';
+
+// Model Dashboard: browser UI + REST API over custom_models.json (served at /dashboard)
+import * as dashboard from './proxy/dashboard';
 import { smartHealth, shouldSwitch } from './proxy/smartHealth';
 
 // Dynamic imports (stays require for Electron-specific modules)
@@ -1095,6 +1098,146 @@ function handleGetAvailableModelsProxy(
   lsReq.end();
 }
 
+// ─── Model Dashboard (browser UI at /dashboard) ───────────────────────────
+
+/** Persists models back to custom_models.json (re-encrypting keys). */
+function saveCustomModels(models: CustomModel[]): boolean {
+  try {
+    const filePath = getCustomModelsPath();
+    const encrypted = cryptoStore.encryptModels(models);
+    fs.writeFileSync(filePath, JSON.stringify({ models: encrypted }, null, 2), 'utf-8');
+    return true;
+  } catch (e) {
+    log.error('[Dashboard] Failed to write custom_models.json', e);
+    return false;
+  }
+}
+
+/**
+ * Serves the dashboard page and its JSON API:
+ *   GET  /dashboard          - the management UI
+ *   GET  /api/models         - list models (API keys masked)
+ *   POST /api/models         - add a model   {provider,id,displayName,apiKey,apiUrl}
+ *   POST /api/models/delete  - remove by name {name}
+ *   POST /api/models/test    - ping a saved model {name} or an unsaved form
+ * Returns true when the request was a dashboard route (fully handled).
+ */
+function handleDashboardRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  body: string,
+): boolean {
+  const url = req.url!.split('?')[0];
+  if (url !== '/dashboard' && url !== '/api/models' && url !== '/api/models/delete' && url !== '/api/models/test') {
+    return false;
+  }
+
+  const json = (code: number, payload: unknown): void => {
+    res.writeHead(code, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  };
+
+  try {
+    if (req.method === 'GET' && url === '/dashboard') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(dashboard.buildDashboardHtml());
+      return true;
+    }
+
+    if (req.method === 'GET' && url === '/api/models') {
+      const models = loadCustomModels().filter((m) => !isAutoModel(m));
+      json(200, { models: models.map(dashboard.sanitizeModel) });
+      return true;
+    }
+
+    let parsed: Record<string, unknown> = {};
+    if (req.method === 'POST' && body) {
+      parsed = JSON.parse(body) as Record<string, unknown>;
+    }
+
+    if (req.method === 'POST' && url === '/api/models') {
+      const { model, error } = dashboard.normalizeModelInput(parsed);
+      if (error || !model) {
+        json(400, { error: error || 'Invalid input' });
+        return true;
+      }
+      const models = loadCustomModels().filter((m) => !isAutoModel(m));
+      if (models.some((m) => m.name === model.name)) {
+        json(409, { error: `A model with ID "${model.externalModelName}" already exists.` });
+        return true;
+      }
+      const written = saveCustomModels([...models, model]);
+      if (!written) {
+        json(500, { error: 'Could not write custom_models.json (see proxy log).' });
+        return true;
+      }
+      log.info(`[Dashboard] Added model "${model.displayName}" (${model.provider}, ${model.apiUrl})`);
+      json(200, { saved: model.displayName });
+      return true;
+    }
+
+    if (req.method === 'POST' && url === '/api/models/delete') {
+      const name = String(parsed.name || '');
+      const models = loadCustomModels().filter((m) => !isAutoModel(m));
+      const remaining = models.filter((m) => m.name !== name);
+      if (remaining.length === models.length) {
+        json(404, { error: `No model named "${name}".` });
+        return true;
+      }
+      const written = saveCustomModels(remaining);
+      if (!written) {
+        json(500, { error: 'Could not write custom_models.json (see proxy log).' });
+        return true;
+      }
+      log.info(`[Dashboard] Deleted model "${name}"`);
+      json(200, { deleted: name });
+      return true;
+    }
+
+    if (req.method === 'POST' && url === '/api/models/test') {
+      // Saved model (by name) or an unsaved dashboard form payload.
+      const name = typeof parsed.name === 'string' ? parsed.name : '';
+      const saved = name ? loadCustomModels().find((m) => m.name === name) : undefined;
+      if (name && !saved) {
+        json(404, { error: `No model named "${name}".` });
+        return true;
+      }
+      if (saved) {
+        dashboard
+          .testModelConnection({
+            provider: saved.provider,
+            apiKey: saved.apiKey,
+            apiUrl: saved.apiUrl,
+            externalModelName: saved.externalModelName,
+          })
+          .then((r) => json(200, r));
+        return true;
+      }
+      const { model, error } = dashboard.normalizeModelInput(parsed);
+      if (error || !model) {
+        json(400, { error: error || 'Invalid input' });
+        return true;
+      }
+      dashboard
+        .testModelConnection({
+          provider: model.provider,
+          apiKey: model.apiKey,
+          apiUrl: model.apiUrl,
+          externalModelName: model.externalModelName,
+        })
+        .then((r) => json(200, r));
+      return true;
+    }
+
+    json(405, { error: 'Method not allowed' });
+    return true;
+  } catch (e) {
+    log.error('[Dashboard] route failed:', e);
+    json(500, { error: 'Dashboard error: ' + (e as Error).message });
+    return true;
+  }
+}
+
 // ─── Main Request Handler ─────────────────────────────────────────────────
 
 function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -1159,6 +1302,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const bodyStr = fullBody.toString('utf-8');
 
     log.info(`[Proxy] Request: ${req.method} ${req.url}`);
+
+    // 0. Dashboard UI + model management API (must run before the /models
+    //    list interception below, which also matches /api/models).
+    if (handleDashboardRoute(req, res, bodyStr)) return;
 
     // 0. Intercept GetAvailableModels (redirected from Electron webRequest)
     if (req.url!.startsWith('/GetAvailableModels')) {
