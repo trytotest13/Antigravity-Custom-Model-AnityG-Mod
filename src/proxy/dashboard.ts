@@ -139,11 +139,7 @@ export function resolveProviderUrl(provider: string, baseUrl: string, modelName:
   if (provider === 'google' || provider === 'ollama') {
     return registry.getProviderUrl(baseUrl, modelName, isStream, provider);
   }
-  const lower = baseUrl.toLowerCase();
-  if (lower.includes('/chat/completions') || lower.includes('/completions')) return baseUrl;
-  if (baseUrl.endsWith('/v1')) return baseUrl + '/chat/completions';
-  if (baseUrl.endsWith('/')) return baseUrl + 'v1/chat/completions';
-  return baseUrl + '/v1/chat/completions';
+  return registry.withChatCompletions(baseUrl);
 }
 
 export interface TestResult {
@@ -237,75 +233,44 @@ export function buildDashboardHtml(): string {
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 32px 16px; background: #141414; color: #e8e8e8;
-         font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+         font: 14px/1.5 system-ui, sans-serif; }
   .wrap { max-width: 720px; margin: 0 auto; }
-  h1 { font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-  h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; }
+  h1 { font-size: 20px; font-weight: 600; }
   .sub { color: #9a9a9a; margin: 0 0 20px; }
   .card { background: #1f1f1f; border: 1px solid #2e2e2e; border-radius: 12px;
           padding: 14px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 14px; }
   .card .info { flex: 1; min-width: 0; }
-  .card .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .badge { font-size: 10px; font-weight: 700; letter-spacing: .4px; padding: 2px 8px;
-           border-radius: 999px; text-transform: uppercase; }
-  .badge.openai { background: #103f2b; color: #34d399; }
-  .badge.anthropic { background: #3f2210; color: #f59e0b; }
-  .badge.google { background: #102a3f; color: #60a5fa; }
-  .badge.openrouter { background: #6366f1; color: #e0e7ff; }
-  .badge.ollama { background: #333; color: #ccc; }
-  .badge.free-router { background: #0d9488; color: #ccfbf1; }
-  .badge.custom { background: #64748b; color: #f1f5f9; }
+  .card .name { font-weight: 600; }
+  .badge { font-size: 10px; font-weight: 700; padding: 2px 8px;
+           border-radius: 999px; text-transform: uppercase; background: #333; color: #ccc; }
   .card .url { color: #8a8a8a; font-size: 12px; white-space: nowrap; overflow: hidden;
                text-overflow: ellipsis; margin-top: 2px; }
   .card .key { color: #777; font-size: 11px; margin-top: 2px; }
   button { background: #2e2e2e; color: #e8e8e8; border: 1px solid #3d3d3d; border-radius: 8px;
-           padding: 7px 12px; cursor: pointer; font-size: 13px; transition: all .15s ease; }
+           padding: 7px 12px; cursor: pointer; font-size: 13px; }
   button:hover { background: #3a3a3a; }
   button.primary { background: #e8e8e8; color: #141414; border-color: #e8e8e8; font-weight: 600; }
-  button.primary:hover { background: #fff; }
-  button.danger:hover { background: #7f1d1d; border-color: #b91c1c; }
-  button.reuse { background: #1a2332; color: #60a5fa; border-color: #2563eb44; display: inline-flex;
-                 align-items: center; gap: 6px; font-size: 12px; }
-  button.reuse:hover { background: #1e3a5f; border-color: #3b82f6; }
-  button.reuse svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
-  .test-status { display: inline-block; font-size: 12px; font-weight: 600; padding: 7px 14px;
-                 border-radius: 8px; text-align: center; min-width: 52px; }
-  .test-status.pass { background: #052e16; color: #34d399; border: 1px solid #16a34a44; }
-  .test-status.fail { background: #2a0a0a; color: #f87171; border: 1px solid #dc262644; }
-  .test-status.none { background: transparent; color: transparent; border: none; min-width: 0; padding: 0; }
   .card .actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
   .empty { text-align: center; color: #777; padding: 32px 0; }
   .panel { background: #1b1b1b; border: 1px solid #2e2e2e; border-radius: 12px; padding: 20px; margin-top: 18px; }
   .panel h2 { margin: 0 0 14px; font-size: 15px; }
   label { display: block; font-size: 12px; color: #a8a8a8; margin: 12px 0 4px; }
-  label b { color: #f87171; }
   input, select { width: 100%; background: #262626; color: #eee; border: 1px solid #3a3a3a;
                   border-radius: 8px; padding: 9px 10px; font-size: 13px; }
-  input:focus, select:focus { outline: 1px solid #555; }
   .row { display: flex; gap: 10px; margin-top: 18px; }
-  .row button { flex: none; }
   .spacer { flex: 1; }
   #testResult { font-size: 13px; margin-top: 12px; min-height: 18px; }
   .ok { color: #34d399; } .bad { color: #f87171; }
   #status { font-size: 13px; margin: 10px 0; min-height: 18px; }
   .hint { color: #8a8a8a; font-size: 12px; margin-top: 6px; }
-  /* Auto Rotation / Smart Router master switch */
-  .toggle-card { background: linear-gradient(135deg, #16241c 0%, #1b1b1b 55%); border: 1px solid #2e4a3a;
+  .toggle-card { background: #1b1b1b; border: 1px solid #2e2e2e;
                  border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px; display: flex;
                  align-items: center; gap: 14px; }
   .toggle-card .t-info { flex: 1; min-width: 0; }
-  .toggle-card .t-title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .toggle-card .t-title { font-weight: 600; font-size: 14px; }
   .toggle-card .t-sub { color: #8a8a8a; font-size: 12px; margin-top: 2px; }
-  .toggle-card .t-state { font-size: 11px; font-weight: 700; letter-spacing: .5px; padding: 2px 9px;
-                          border-radius: 999px; text-transform: uppercase; }
-  .toggle-card .t-state.on { background: #052e16; color: #34d399; border: 1px solid #16a34a66; }
-  .toggle-card .t-state.off { background: #2a0a0a; color: #f87171; border: 1px solid #dc262666; }
-  #autoToggle { min-width: 132px; font-weight: 600; border-radius: 999px; padding: 9px 18px; }
-  #autoToggle.on { background: #052e16; color: #34d399; border-color: #16a34a; }
-  #autoToggle.on:hover { background: #0a3d1f; }
-  #autoToggle.off { background: #2a0a0a; color: #f87171; border-color: #dc2626; }
-  #autoToggle.off:hover { background: #3d0d0d; }
-  #autoToggle:disabled { opacity: .55; cursor: wait; }
+  .test-status { font-size: 12px; font-weight: 600; }
+  .test-status.pass { color: #34d399; } .test-status.fail { color: #f87171; } .test-status.none { display: none; }
 </style>
 </head>
 <body>

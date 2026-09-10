@@ -13,7 +13,7 @@ export const updateActions: Record<string, (() => void) | undefined> = {
   [MenuUpdateStep.CheckForUpdates]: () => checkForUpdates(true),
   [MenuUpdateStep.CheckingForUpdates]: undefined,
   [MenuUpdateStep.DownloadingUpdate]: undefined,
-  [MenuUpdateStep.RestartToUpdate]: () => quitAndInstall(),
+  [MenuUpdateStep.RestartToUpdate]: () => autoUpdater.quitAndInstall(),
 };
 
 // True if the last call to check for updates was from a user click in the menu.
@@ -150,8 +150,4 @@ export function checkForUpdates(isManual = false): void {
   autoUpdater.checkForUpdates().catch((err) => {
     console.error('[AutoUpdater] Failed to check for updates:', err.message);
   });
-}
-
-export function quitAndInstall(): void {
-  autoUpdater.quitAndInstall();
 }

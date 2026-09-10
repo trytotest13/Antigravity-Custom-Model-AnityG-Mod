@@ -325,6 +325,48 @@ export function pickChain(models: CustomModel[], body: AutoGeminiBody): CustomMo
   return explainRoute(models, body).chain;
 }
 
+/**
+ * Ranked fallback chain for a request the user pinned to a specific model
+ * (free-router behavior: capability filter first, then health-aware ranking,
+ * not raw config-file order). The selected model itself is NOT included.
+ */
+export function rankFallbacks(
+  selected: CustomModel,
+  candidates: CustomModel[],
+  body: AutoGeminiBody,
+): CustomModel[] {
+  const pool = candidates.filter((m) => !isAutoModel(m) && m !== selected);
+  if (pool.length === 0) return [];
+
+  const cls = classifyRequest(body);
+  const need = estimateTokens(body);
+
+  // Hard requirement, same as Auto: a vision task must fall back to seers.
+  let usable = pool;
+  if (cls.task === 'vision') {
+    const seers = pool.filter((m) => capOf(m).supportsImages);
+    if (seers.length > 0) usable = seers;
+  }
+
+  // Models whose window can't fit the (uncompressed) request only help after
+  // compression is impossible mid-chain - keep them, but last.
+  const fitting = usable.filter((m) => capOf(m).maxTokens >= need);
+  const rankedPool = fitting.length > 0 ? fitting : usable;
+
+  const scored = rankedPool
+    .map((m) => ({ m, ...scoreFor(m, cls.task, need) }))
+    // Breaker-open models are skipped live at dial time; ranking already sinks
+    // sick models via the penalty, so no additional filter here.
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        capOf(a.m).maxTokens - capOf(b.m).maxTokens ||
+        a.m.displayName.localeCompare(b.m.displayName),
+    );
+
+  return scored.slice(0, MAX_CHAIN).map((s) => s.m);
+}
+
 interface RouteExplanation {
   chain: CustomModel[];
   reason: string;

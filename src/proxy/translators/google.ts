@@ -37,31 +37,8 @@ interface GeminiStreamChunk {
   modelVersion?: string;
 }
 
-interface GeminiRequestBody {
-  model?: string;
-  modelId?: string;
-  contents?: GeminiContent[];
-  systemInstruction?: { parts: { text?: string }[] };
-  tools?: unknown[];
-  generationConfig?: {
-    temperature?: number;
-    maxOutputTokens?: number;
-    topP?: number;
-    topK?: number;
-    stopSequences?: string[];
-  };
-}
-
-// ─── Request/Response Translation (Passthrough: Google speaks Gemini natively) ─
-
-export function mapGeminiToGoogle(geminiBody: GeminiRequestBody, modelName: string): GeminiRequestBody {
-  if (modelName && !geminiBody.model) return { ...geminiBody, model: modelName };
-  return geminiBody;
-}
-
-export function mapGoogleToGemini(googleRes: unknown, _modelName: string): unknown {
-  return googleRes;
-}
+// ─── Request/Response Translation (Passthrough: Google speaks Gemini natively;
+// see registry.translateRequest/translateResponse, which return the body as-is) ─
 
 // ─── Streaming Chunk Translation ──────────────────────────────────────────
 

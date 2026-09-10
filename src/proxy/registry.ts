@@ -25,8 +25,6 @@ export interface TranslatorModule {
   mapGeminiToAnthropic?: (body: unknown, modelName: string) => unknown;
   mapAnthropicToGemini?: (res: unknown, modelName: string) => unknown;
   mapAnthropicChunkToGemini?: (chunk: unknown, modelName: string) => unknown | null;
-  mapGeminiToGoogle?: (body: unknown, modelName: string) => unknown;
-  mapGoogleToGemini?: (res: unknown, modelName: string) => unknown;
   mapGoogleChunkToGemini?: (chunk: unknown, modelName: string) => unknown | null;
 }
 
@@ -162,4 +160,17 @@ export function getProviderUrl(baseUrl: string, modelName: string, isStream: boo
   if (provider === 'google' || providerFamily(provider) === 'google') return getGoogleApiUrl(baseUrl, modelName, isStream);
   if (provider === 'ollama') return getOllamaApiUrl(baseUrl);
   return baseUrl;
+}
+
+/**
+ * Single source for appending /v1/chat/completions to a bare OpenAI-family
+ * base URL. Callers keep their own gating (proxy dials vs dashboard tester
+ * differ in which providers this applies to); the append rules live here.
+ */
+export function withChatCompletions(baseUrl: string): string {
+  const lower = baseUrl.toLowerCase();
+  if (lower.includes('/chat/completions') || lower.includes('/completions')) return baseUrl;
+  if (baseUrl.endsWith('/v1')) return baseUrl + '/chat/completions';
+  if (baseUrl.endsWith('/')) return baseUrl + 'v1/chat/completions';
+  return baseUrl + '/v1/chat/completions';
 }

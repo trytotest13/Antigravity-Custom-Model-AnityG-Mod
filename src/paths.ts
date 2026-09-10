@@ -7,10 +7,6 @@ export function getAppDataDirName(): string {
   return `antigravity${app.isPackaged ? '' : '-dev'}`;
 }
 
-export function getAppDataDir(): string {
-  return path.join(os.homedir(), '.gemini', getAppDataDirName());
-}
-
 export function getSettingsPbPath(): string {
   return path.join(os.homedir(), '.gemini', 'config', 'config.json');
 }

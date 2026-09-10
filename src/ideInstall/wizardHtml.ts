@@ -17,34 +17,16 @@ export function getWizardHtml(iconBase64: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Welcome to Antigravity</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
   * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
   }
 
-  :root {
-    --bg-primary: #000000;
-    --bg-secondary: #1A1A1A;
-    --bg-tertiary: #242424;
-    --bg-hover: #2A2A2A;
-    --text-primary: #F5F5F5;
-    --text-secondary: #A0A0A0;
-    --text-muted: #666;
-    --accent: #2F80ED;
-    --accent-hover: #2D74D7;
-    --border: #2A2A2A;
-    --radius: 12px;
-    --radius-sm: 8px;
-    --transition: 200ms ease;
-  }
-
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: var(--bg-primary);
-    color: var(--text-primary);
+    font-family: system-ui, sans-serif;
+    background: #000;
+    color: #F5F5F5;
     height: 100vh;
     overflow: hidden;
     display: flex;
@@ -78,15 +60,9 @@ export function getWizardHtml(iconBase64: string): string {
     text-align: center;
     max-width: 480px;
     width: 100%;
-    animation: fadeIn 0.4s ease;
   }
   .step.active {
     display: flex;
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(12px); }
-    to   { opacity: 1; transform: translateY(0); }
   }
 
   /* Icon */
@@ -112,7 +88,7 @@ export function getWizardHtml(iconBase64: string): string {
   p {
     font-size: 14px;
     line-height: 1.6;
-    color: var(--text-secondary);
+    color: #A0A0A0;
     margin-bottom: 36px;
   }
 
@@ -121,22 +97,7 @@ export function getWizardHtml(iconBase64: string): string {
     display: flex;
     gap: 8px;
     margin-bottom: 16px;
-  }
-  .loader div {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background-color: var(--accent);
-    opacity: 0.3;
-    animation: dot-pulse 1.5s infinite ease-in-out;
-  }
-  .loader div:nth-child(1) { animation-delay: 0s; }
-  .loader div:nth-child(2) { animation-delay: 0.3s; }
-  .loader div:nth-child(3) { animation-delay: 0.6s; }
-
-  @keyframes dot-pulse {
-    0%, 100% { opacity: 0.2; transform: scale(0.9); }
-    50% { opacity: 0.7; transform: scale(1.1); }
+    color: #2F80ED;
   }
 
   /* Checkbox styling */
@@ -146,53 +107,9 @@ export function getWizardHtml(iconBase64: string): string {
     gap: 10px;
     cursor: pointer;
     font-size: 14px;
-    color: var(--text-secondary);
-    transition: color var(--transition);
+    color: #A0A0A0;
     margin-bottom: 18px;
     -webkit-app-region: no-drag;
-  }
-
-  .checkbox-label:hover {
-    color: var(--text-primary);
-  }
-
-  .checkbox-label input {
-    display: none;
-  }
-
-  .custom-checkbox {
-    width: 18px;
-    height: 18px;
-    border: 2px solid #333;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: var(--transition);
-    background: var(--bg-secondary);
-  }
-
-  .checkbox-label:hover .custom-checkbox {
-    border-color: var(--accent);
-  }
-
-  .checkbox-label input:checked + .custom-checkbox {
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-
-  .custom-checkbox::after {
-    content: '';
-    width: 4px;
-    height: 8px;
-    border: solid white;
-    border-width: 0 2px 2px 0;
-    transform: rotate(45deg) translate(-1px, -1px);
-    display: none;
-  }
-
-  .checkbox-label input:checked + .custom-checkbox::after {
-    display: block;
   }
 
   /* Buttons */
@@ -209,23 +126,18 @@ export function getWizardHtml(iconBase64: string): string {
     font-size: 14px;
     font-weight: 500;
     padding: 13px 24px;
-    border-radius: var(--radius-sm);
+    border-radius: 8px;
     border: none;
     cursor: pointer;
-    transition: all var(--transition);
     -webkit-app-region: no-drag;
   }
 
   .btn-primary {
-    background: var(--accent);
+    background: #2F80ED;
     color: #fff;
   }
   .btn-primary:hover {
-    background: var(--accent-hover);
-    transform: translateY(-1px);
-  }
-  .btn-primary:active {
-    transform: translateY(0);
+    background: #2D74D7;
   }
 
 </style>
@@ -236,10 +148,7 @@ export function getWizardHtml(iconBase64: string): string {
 
     <!-- Step 0: Setting up -->
     <div id="step-setup" class="step active">
-      <div class="loader">
-        <div></div><div></div><div></div>
-      </div>
-      <div class="text" style="font-size: 13px; opacity: 0.6; letter-spacing: 0.03em;">Setting up…</div>
+      <div class="loader">Setting up…</div>
     </div>
 
     <!-- Step 1: Welcome -->
@@ -252,7 +161,6 @@ export function getWizardHtml(iconBase64: string): string {
 
       <label class="checkbox-label">
         <input type="checkbox" id="chk-download" checked>
-        <span class="custom-checkbox"></span>
         <span>Download the Antigravity IDE</span>
       </label>
 

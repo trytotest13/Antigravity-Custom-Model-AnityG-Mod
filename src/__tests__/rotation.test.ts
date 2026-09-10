@@ -71,6 +71,8 @@ vi.mock('https', async () => {
 });
 
 import { handleCustomModelRequest } from '../proxy';
+import { smartHealth } from '../proxy/smartHealth';
+import { healthKey } from '../proxy/modelUtils';
 
 const OK = JSON.stringify({ choices: [{ message: { content: 'pong' } }] });
 
@@ -111,6 +113,7 @@ function flush(): Promise<void> {
 beforeEach(() => {
   dials.length = 0;
   responder = () => ({ status: 200, body: OK });
+  smartHealth.clear();
 });
 
 afterEach(() => { vi.useRealTimers(); });
@@ -258,5 +261,87 @@ describe('Free Router (Part 20)', () => {
     handleCustomModelRequest(res, FR, { contents: [] } as never, false, 0, []);
     await flush();
     expect((res as unknown as { ended: boolean }).ended).toBe(true);
+  });
+});
+
+describe('cooldown-aware switching (free-router rule 9)', () => {
+  it('breaker-open fallback is skipped: A 401 -> B (open) skipped -> C dialed', async () => {
+    const A = mk('model-a');
+    const B = mk('model-b');
+    const C = mk('model-c');
+    for (let i = 0; i < 3; i++) smartHealth.reportFailure(healthKey(B));
+    responder = () => ({ status: 401, body: '{"error":{}}' });
+    const res = fakeRes();
+    handleCustomModelRequest(res, A, { contents: [] } as never, false, 0, [B, C]);
+    await flush();
+    expect(dials.some((d) => d.body.includes('model-b'))).toBe(false);
+    expect(dials.some((d) => d.body.includes('model-c'))).toBe(true);
+  });
+
+  it('ALL remaining fallbacks on cooldown -> dialed anyway instead of giving up', async () => {
+    const A = mk('model-a');
+    const B = mk('model-b');
+    for (let i = 0; i < 3; i++) smartHealth.reportFailure(healthKey(B));
+    responder = () => ({ status: 401, body: '{"error":{}}' });
+    const res = fakeRes();
+    handleCustomModelRequest(res, A, { contents: [] } as never, false, 0, [B]);
+    await flush();
+    expect(dials.some((d) => d.body.includes('model-b'))).toBe(true);
+  });
+});
+
+describe('empty-stream rotation (free-router rule 11)', () => {
+  const STREAM_OK = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n';
+
+  it('200 stream that closes with NO content -> rotates to B instead of shipping an empty stream', async () => {
+    const A = mk('model-a');
+    const B = mk('model-b');
+    responder = () => {
+      if (dials.length <= 1) return { status: 200, body: '' };
+      return { status: 200, body: STREAM_OK };
+    };
+    const res = fakeRes();
+    handleCustomModelRequest(res, A, { contents: [] } as never, true, 0, [B]);
+    await flush();
+    expect(dials.length).toBe(2);
+    expect(dials[1].body).toContain('model-b');
+    expect(res.statusCode).toBe(200);
+    expect(res.chunks.join('')).toContain('data:');
+  });
+
+  it('200 stream with no fallback left -> valid empty SSE completion, not a broken stream', async () => {
+    const A = mk('model-a');
+    responder = () => ({ status: 200, body: '' });
+    const res = fakeRes();
+    handleCustomModelRequest(res, A, { contents: [] } as never, true, 0, []);
+    await flush();
+    expect(dials.length).toBe(1);
+    expect(res.statusCode).toBe(200);
+    expect((res as unknown as { ended: boolean }).ended).toBe(true);
+    expect(res.chunks.join('')).toContain('finishReason');
+  });
+
+  it('stream 429 with Retry-After: 5 -> same-model retry waits 5s, not 1s', async () => {
+    const A = { ...mk('model-a'), maxRetries: 2 };
+    responder = () => {
+      if (dials.length <= 1) {
+        return { status: 429, body: '{"error":{"message":"rate limit"}}', headers: { 'retry-after': '5' } };
+      }
+      return { status: 200, body: STREAM_OK };
+    };
+    const res = fakeRes();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      handleCustomModelRequest(res, A, { contents: [] } as never, true, 0, []);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(dials.length).toBe(1); // 1s elapsed - Retry-After says wait 5s
+      await vi.advanceTimersByTimeAsync(4500);
+      expect(dials.length).toBe(2); // 5.5s total - retry fired
+      await flush();
+      expect(res.statusCode).toBe(200);
+      expect(res.chunks.join('')).toContain('data:');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,4 +1,5 @@
 import { setKeepComputerAwake } from '../utils';
+import type { StorageManager } from '../storage';
 
 // Setting keys
 export enum SettingKey {
@@ -14,11 +15,6 @@ export const DEFAULTS = new Map<SettingKey, boolean>([
   [SettingKey.RUN_IN_BACKGROUND, process.platform !== 'win32'],
   [SettingKey.KEEP_COMPUTER_AWAKE, false],
 ]);
-
-interface StorageManager {
-  onDidChange(listener: (changes: Record<string, string | null>) => void): { dispose(): void };
-  getItems(): Promise<Record<string, string | null>>;
-}
 
 function applySideEffects(settings: Record<string, string | null>): void {
   const val = settings[SettingKey.KEEP_COMPUTER_AWAKE];

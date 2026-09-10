@@ -5,11 +5,14 @@ import {
   classifyRequest,
   estimateTokens,
   pickChain,
+  rankFallbacks,
   compressContents,
   planAutoRoute,
   AUTO_DISPLAY_NAME,
   AUTO_EXTERNAL_NAME,
 } from '../proxy/autoRouter';
+import { smartHealth } from '../proxy/smartHealth';
+import { healthKey } from '../proxy/modelUtils';
 import type { CustomModel } from '../proxy';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────
@@ -241,5 +244,63 @@ describe('planAutoRoute', () => {
     expect(plan.compressed).toBe(true);
     expect(plan.chain.length).toBeGreaterThan(0);
     expect(plan.body.contents!.length).toBeLessThan(30);
+  });
+});
+
+// ─── Tie rotation (Part 6) ────────────────────────────────────────────────
+
+describe('tie rotation', () => {
+  it('near-tied chat candidates take turns winning', () => {
+    smartHealth.clear();
+    const a = mk('claude-alpha');
+    const b = mk('claude-beta');
+    const body = textBody('Hey, how have you been lately? ' + 'lorem ipsum dolor sit amet. '.repeat(12));
+    const winners = new Set<string>();
+    for (let i = 0; i < 4; i++) {
+      winners.add(pickChain([a, b], body)[0].displayName);
+    }
+    expect(winners.size).toBe(2);
+  });
+
+  it('a clear winner is never rotated away', () => {
+    smartHealth.clear();
+    const fast = mk('gpt-4o-mini'); // 'mini' quick hint: decisive for short input
+    const other = mk('deepseek-chat');
+    const body = textBody('hi');
+    for (let i = 0; i < 4; i++) {
+      expect(pickChain([fast, other], body)[0].displayName).toBe('gpt-4o-mini');
+    }
+  });
+});
+
+// ─── Specific-model fallback ranking (free-router rules 7-8) ─────────────
+
+describe('rankFallbacks', () => {
+  it('excludes the selected model and the virtual Auto entry', () => {
+    smartHealth.clear();
+    const chain = rankFallbacks(gpt4oMini, [gpt4oMini, buildAutoModel(), deepseek], textBody('hello there friend'));
+    expect(chain.some((m) => m === gpt4oMini)).toBe(false);
+    expect(chain.some(isAutoModel)).toBe(false);
+    expect(chain.map((m) => m.displayName)).toContain('deepseek-chat');
+  });
+
+  it('a vision task only falls back to models that can see', () => {
+    smartHealth.clear();
+    const imageBody = {
+      contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'x' } }] }],
+    };
+    const chain = rankFallbacks(gpt4oMini, [deepseek, claude], imageBody);
+    expect(chain.map((m) => m.displayName)).toEqual(['claude-sonnet-4']);
+  });
+
+  it('a breaker-punished model sinks to the back of the chain', () => {
+    smartHealth.clear();
+    const sick = mk('claude-alpha');
+    const healthy = mk('claude-beta');
+    smartHealth.reportFailure(healthKey(sick));
+    smartHealth.reportFailure(healthKey(sick));
+    const chain = rankFallbacks(gpt4oMini, [sick, healthy], textBody('plain chat '.repeat(20)));
+    expect(chain[chain.length - 1].displayName).toBe('claude-alpha');
+    expect(chain[0].displayName).toBe('claude-beta');
   });
 });

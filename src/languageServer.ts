@@ -4,6 +4,7 @@ import { shellEnvSync } from 'shell-env';
 import * as fs from 'fs';
 import path from 'path';
 import * as readline from 'readline';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { PassThrough } from 'stream';
 import { getLsLogPath, getAppDataDirName, getActivePortFilePath } from './paths';
 import { LS_CERT_FINGERPRINT } from './constants';
@@ -116,13 +117,13 @@ export function clearLsProcess(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract lines after a crash trigger phrase from a list of stderr lines.
- * Returns all lines from the first trigger phrase onwards.
+ * Best-effort extraction of the crash stack trace from buffered stderr.
+ * Returns the stack trace string, or undefined if no trigger phrase was found.
  */
-function getLinesAfterCrash(lines: string[]): string[] {
+export function extractCrashStackTrace(stderr: string): string | undefined {
   const crashLines: string[] = [];
   let foundTrigger = false;
-  for (const line of lines) {
+  for (const line of stderr.split('\n')) {
     if (CRASH_TRIGGER_PHRASES.some((phrase) => line.includes(phrase))) {
       foundTrigger = true;
     }
@@ -130,43 +131,7 @@ function getLinesAfterCrash(lines: string[]): string[] {
       crashLines.push(line);
     }
   }
-  return crashLines;
-}
-
-/**
- * Best-effort extraction of the crash stack trace from buffered stderr.
- * Returns the stack trace string, or undefined if no trigger phrase was found.
- */
-export function extractCrashStackTrace(stderr: string): string | undefined {
-  const lines = stderr.split('\n');
-  const crashLines = getLinesAfterCrash(lines);
   return crashLines.length > 0 ? crashLines.join('\n') : undefined;
-}
-
-interface NodeModuleConfig {
-  name: string;
-  envVar: string;
-  relativePath: string[];
-}
-
-/**
- * Sets environment variables for bundled node modules so the language
- * server can find them.
- *
- * NOTE: If you add a new module that needs to be executed this way:
- * 1. Add it to `asarUnpack` in `package.json` so it is available on the filesystem.
- * 2. Add it to `modules` in the callsite of setupNodeModules.
- */
-function setupNodeModules(env: Record<string, string | undefined>, modules: NodeModuleConfig[]): void {
-  for (const mod of modules) {
-    let entryPoint = '';
-    if (!app.isPackaged) {
-      entryPoint = path.join(__dirname, '..', 'node_modules', mod.name, ...mod.relativePath);
-    } else {
-      entryPoint = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', mod.name, ...mod.relativePath);
-    }
-    env[mod.envVar] = entryPoint;
-  }
 }
 
 /**
@@ -228,13 +193,29 @@ export function startLanguageServer(port: number, csrf: string, headless?: boole
     // LS will read when browser recording encoder is invoked.
     env['AGY_BROWSER_ACTIVE_PORT_FILE'] = getActivePortFilePath();
     setupNodeWrapper(env);
-    setupNodeModules(env, [
-      {
-        name: 'chrome-devtools-mcp',
-        envVar: 'CHROME_DEVTOOLS_MCP_JS',
-        relativePath: ['build', 'src', 'bin', 'chrome-devtools-mcp.js'],
-      },
-    ]);
+    // Bundled chrome-devtools-mcp entry point (must be in `asarUnpack` in package.json).
+    // ponytail: single-module inline; restore setupNodeModules loop if a second module is added.
+    env['CHROME_DEVTOOLS_MCP_JS'] = app.isPackaged
+      ? path.join(
+          process.resourcesPath,
+          'app.asar.unpacked',
+          'node_modules',
+          'chrome-devtools-mcp',
+          'build',
+          'src',
+          'bin',
+          'chrome-devtools-mcp.js',
+        )
+      : path.join(
+          __dirname,
+          '..',
+          'node_modules',
+          'chrome-devtools-mcp',
+          'build',
+          'src',
+          'bin',
+          'chrome-devtools-mcp.js',
+        );
     _lsProcess = spawn(LS_BINARY, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: env as Record<string, string>,
@@ -392,10 +373,6 @@ function monitorLsCrashInternal(
       console.error(`Failed to restart language server: ${(err as Error).message}`);
     }
   });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function killLanguageServer(): Promise<void> {

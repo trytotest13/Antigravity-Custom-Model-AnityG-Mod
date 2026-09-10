@@ -147,57 +147,29 @@ export function setKeepComputerAwake(keep: boolean | undefined): void {
   }
 }
 
-interface NodeWrapperPaths {
-  newEnvPath: string;
-  nodeWrapperPath: string | undefined;
-  binPath: string | undefined;
-}
-
-export function getNodeWrapperPaths(
-  envPath: string,
-  os: string,
-  isPackaged: boolean,
-  userDataPath: string,
-  baseDir: string,
-): NodeWrapperPaths {
-  const delimiter = path.delimiter;
-  if (!isPackaged) {
-    const devBinPath = path.join(baseDir, '..', 'node_modules', '.bin');
-    return {
-      newEnvPath: `${devBinPath}${delimiter}${envPath || ''}`,
-      nodeWrapperPath: undefined,
-      binPath: undefined,
-    };
-  }
-  const binPath = path.join(userDataPath, 'bin');
-  const nodeWrapperPath = path.join(binPath, os === 'win32' ? 'agy-node.cmd' : 'agy-node');
-  return {
-    newEnvPath: `${binPath}${delimiter}${envPath || ''}`,
-    nodeWrapperPath,
-    binPath,
-  };
-}
-
 /**
  * Sets up a wrapper script for Node.js that runs Electron as Node.
  * This allows running standard Node scripts using the Electron binary.
  */
 export function setupNodeWrapper(env: Record<string, string | undefined>): void {
-  const userDataPath = app.isPackaged ? app.getPath('userData') : '';
   // Windows environment variables are case-insensitive, but when copying process.env
   // into a plain object, we might get 'Path' instead of 'PATH'. We need to find
   // the actual key used to avoid creating case-duplicate keys (e.g. 'Path' and 'PATH')
   // which can confuse child_process.spawn on Windows.
   const isWindows = process.platform === 'win32';
   const pathKey = isWindows ? Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH' : 'PATH';
-  const { newEnvPath, nodeWrapperPath, binPath } = getNodeWrapperPaths(
-    env[pathKey] || '',
-    process.platform,
-    app.isPackaged,
-    userDataPath,
-    __dirname,
-  );
-  env[pathKey] = newEnvPath;
+  const envPath = env[pathKey] || '';
+  // ponytail: two-branch path setup inline (dev .bin vs packaged userData/bin);
+  // re-extract getNodeWrapperPaths if a third mode appears.
+  let nodeWrapperPath: string | undefined;
+  let binPath: string | undefined;
+  if (!app.isPackaged) {
+    env[pathKey] = `${path.join(__dirname, '..', 'node_modules', '.bin')}${path.delimiter}${envPath}`;
+  } else {
+    binPath = path.join(app.getPath('userData'), 'bin');
+    nodeWrapperPath = path.join(binPath, process.platform === 'win32' ? 'agy-node.cmd' : 'agy-node');
+    env[pathKey] = `${binPath}${path.delimiter}${envPath}`;
+  }
   // In non-packaged dev mode, we don't create a wrapper and it'll just use machine node
   if (!nodeWrapperPath || !binPath) {
     return;

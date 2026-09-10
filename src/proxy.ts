@@ -70,7 +70,7 @@ import { detectModelCapabilities, detectModelCapabilitiesByName, healthKey } fro
 import * as registry from './proxy/registry';
 
 // Auto Smart Router: virtual model that picks the best configured model per request
-import { buildAutoModel, isAutoModel, planAutoRoute, type AutoGeminiBody } from './proxy/autoRouter';
+import { buildAutoModel, isAutoModel, planAutoRoute, rankFallbacks, type AutoGeminiBody } from './proxy/autoRouter';
 
 // Model Dashboard: browser UI + REST API over custom_models.json (served at /dashboard)
 import * as dashboard from './proxy/dashboard';
@@ -78,6 +78,9 @@ import { smartHealth, shouldSwitch, shouldSwitchBody } from './proxy/smartHealth
 
 // Electron-safeStorage key store (imported statically so tests can mock it)
 import * as cryptoStore from './cryptoStore';
+
+// Model config validation (standalone module, no dependency cycle)
+import { validateCustomModel } from './schemaValidator';
 
 // ─── Model Helpers ────────────────────────────────────────────────────────
 
@@ -132,29 +135,27 @@ function saveRouterSettings(s: RouterSettings): boolean {
   }
 }
 
-export function toSlug(model: CustomModel): string {
-  // ponytail: virtual Auto keeps its stable legacy slug so existing picks keep routing
-  if ((model.externalModelName || '') === 'auto-router') return 'custom-auto-router';
-  // ponytail: provider prefix keeps same model id on different providers distinct (was colliding to one entry)
-  const base = (model.externalModelName || model.name || '')
+/** Shared normalizer for toSlug/toLegacySlug (identical rules, single copy). */
+function slugPart(s: string): string {
+  return s
     .replace(/^models\//, '')
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase();
-  const provider = (model.provider || '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
+}
+
+export function toSlug(model: CustomModel): string {
+  // ponytail: virtual Auto keeps its stable legacy slug so existing picks keep routing
+  if ((model.externalModelName || '') === 'auto-router') return 'custom-auto-router';
+  // ponytail: provider prefix keeps same model id on different providers distinct (was colliding to one entry)
+  const base = slugPart(model.externalModelName || model.name || '');
+  const provider = slugPart(model.provider || '');
   return provider && !base.startsWith(provider + '-') ? `custom-${provider}-${base}` : `custom-${base}`;
 }
 
 // Legacy slug (pre-provider-prefix) so previously-picked models still route after upgrade.
 export function toLegacySlug(model: CustomModel): string {
-  return (
-    'custom-' +
-    (model.externalModelName || model.name || '')
-      .replace(/^models\//, '')
-      .replace(/[^a-zA-Z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase()
-  );
+  return 'custom-' + slugPart(model.externalModelName || model.name || '');
 }
 
 // Fallback model-list entry when the upstream response can't be merged (was 3 copy-pasted blocks).
@@ -272,12 +273,28 @@ function handleAutoModelRequest(
   handleCustomModelRequest(res, primary, plan.body as unknown as GeminiRequestBody, isStream, 0, fallbacks);
 }
 
+/**
+ * True when the IDE is asking for the virtual Auto model by any of its
+ * identity strings. Needed on the routing path because the dashboard toggle
+ * OFF removes Auto from getRoutableModels() (so the IDE picker hides it) -
+ * without this check, an in-flight Auto request would fall through to the
+ * transparent Google proxy instead of the actionable "turned OFF" error.
+ */
+function isAutoIdentity(name: string | undefined): boolean {
+  if (!name) return false;
+  const auto = buildAutoModel();
+  return (
+    name === toSlug(auto) ||
+    name === toLegacySlug(auto) ||
+    name === auto.name ||
+    name === generateModelPlaceholderId(auto)
+  );
+}
+
 // ─── Model Loading ────────────────────────────────────────────────────────
 
 function loadCustomModels(): CustomModel[] {
   const filePath = getCustomModelsPath();
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { validateCustomModel } = require('./schemaValidator');
 
   if (!fs.existsSync(filePath)) {
     const defaultModels = {
@@ -578,12 +595,29 @@ export function handleCustomModelRequest(
    * Terminal-failure escape hatch: when this model is beyond retries, hand
    * the SAME request to the next model in the chain. Only possible before
    * any bytes are written to the IDE (Part 4: never concatenate partial output).
+   * Models on an open circuit breaker are skipped (free-router cooldown rule)
+   * unless every remaining model is open - a cooldown model still beats
+   * giving up when it is all we have.
    */
   const fallbackToNext = (where: string, detail: string): boolean => {
     if (fallbacks.length === 0 || res.headersSent) return false;
-    log.warn(`[Router] ${model.displayName} failed: ${detail} - switching to ${fallbacks[0].displayName}`);
+    let rest = fallbacks;
+    const skipped: string[] = [];
+    while (rest.length > 0 && smartHealth.isOpen(healthKey(rest[0]))) {
+      skipped.push(rest[0].displayName);
+      rest = rest.slice(1);
+    }
+    if (rest.length === 0 && skipped.length > 0) {
+      // All remaining candidates are on cooldown - dial them anyway.
+      rest = fallbacks;
+      skipped.length = 0;
+    }
+    if (skipped.length > 0) {
+      log.warn(`[Router] Skipping cooldown models: ${skipped.join(', ')}`);
+    }
+    log.warn(`[Router] ${model.displayName} failed: ${detail} - switching to ${rest[0].displayName}`);
     const nextAttempts = [...attempts, { model: model.displayName, reason: detail }];
-    handleCustomModelRequest(res, fallbacks[0], geminiBody, isStream, 0, fallbacks.slice(1), nextAttempts);
+    handleCustomModelRequest(res, rest[0], geminiBody, isStream, 0, rest.slice(1), nextAttempts);
     return true;
   };
 
@@ -640,16 +674,7 @@ export function handleCustomModelRequest(
   if (provider === 'google' || provider === 'ollama') {
     finalUrlStr = registry.getProviderUrl(finalUrlStr, model.externalModelName, isStream, provider);
   } else if (provider === 'openai' || model.provider === 'custom' || model.provider === 'openrouter' || model.provider === 'free-router') {
-    const urlLower = finalUrlStr.toLowerCase();
-    if (!urlLower.includes('/chat/completions') && !urlLower.includes('/completions')) {
-      if (finalUrlStr.endsWith('/v1')) {
-        finalUrlStr += '/chat/completions';
-      } else if (!finalUrlStr.endsWith('/')) {
-        finalUrlStr += '/v1/chat/completions';
-      } else {
-        finalUrlStr += 'v1/chat/completions';
-      }
-    }
+    finalUrlStr = registry.withChatCompletions(finalUrlStr);
   }
   const url = new URL(finalUrlStr);
   const client = url.protocol === 'https:' ? https : http;
@@ -675,6 +700,9 @@ export function handleCustomModelRequest(
   const request = client.request(url, options, (apiRes) => {
     apiRes.on('error', (err) => {
       log.error(`[Proxy] Upstream stream error for ${model.name}:`, err.message);
+      smartHealth.reportFailure(healthKey(model));
+      // Nothing written yet -> this request can still rotate to the next model.
+      if (!res.headersSent && fallbackToNext('Upstream stream error', err.message)) return;
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Upstream connection error: ' + err.message } }));
@@ -694,8 +722,10 @@ export function handleCustomModelRequest(
           // Part 3: hard-quota bodies skip the retry budget entirely.
           const verdict = shouldSwitchBody(apiRes.statusCode, errorBody);
           if (retryCount < MAX_RETRIES && verdict.retrySame) {
-            log.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts), 1000 * (retryCount + 1));
+            const retryAfter = parseRetryAfter(apiRes.headers);
+            const delay = retryAfter > 0 ? retryAfter : 1000 * (retryCount + 1);
+            log.warn(`[Proxy] Stream error, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`);
+            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts), delay);
             return;
           }
           // Part 2: only switchable failures burn the chain; plain 400s fail fast.
@@ -711,12 +741,35 @@ export function handleCustomModelRequest(
         return;
       }
 
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
+      // Part 26 (free-router routing rule 11): SSE headers and the first
+      // mapped chunk are held back until the upstream actually produces
+      // content, so a model that answers 200 and then dies empty can still be
+      // replaced by the next model in the chain instead of shipping a broken
+      // stream to the IDE.
+      let beganStream = false;
+      let sawContent = false;
+      const beginStream = (): boolean => {
+        if (beganStream) return true;
+        if (res.headersSent) return false;
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        beganStream = true;
+        return true;
+      };
+      const emitChunk = (mapped: Record<string, unknown>): void => {
+        if (!beginStream()) return;
+        sawContent = true;
+        const cloudCodeResponse = {
+          response: { candidates: [mapped] },
+          traceId: '',
+          metadata: {},
+        };
+        res.write(`data: ${JSON.stringify(cloudCodeResponse)}\n\n`);
+      };
 
       let buffer = '';
       apiRes.on('data', (chunk: Buffer) => {
@@ -735,12 +788,7 @@ export function handleCustomModelRequest(
               const mapped = registry.translateStreamChunk(provider, parsed, model.name);
 
               if (mapped) {
-                const cloudCodeResponse = {
-                  response: { candidates: [mapped] },
-                  traceId: '',
-                  metadata: {},
-                };
-                res.write(`data: ${JSON.stringify(cloudCodeResponse)}\n\n`);
+                emitChunk(mapped as Record<string, unknown>);
               }
             } catch (err) {
               // Partial/invalid JSON chunks are normal during streaming; debug-level only
@@ -758,17 +806,21 @@ export function handleCustomModelRequest(
               const parsed = JSON.parse(dataStr);
               const mapped = registry.translateStreamChunk(provider, parsed, model.name);
               if (mapped) {
-                const cloudCodeResponse = {
-                  response: { candidates: [mapped] },
-                  traceId: '',
-                  metadata: {},
-                };
-                res.write(`data: ${JSON.stringify(cloudCodeResponse)}\n\n`);
+                emitChunk(mapped as Record<string, unknown>);
               }
             } catch (e) {
               log.debug(`[Proxy] Stream buffer drain parse warning for ${model.name}:`, (e as Error).message);
             }
           }
+        }
+
+        // Part 26: a 200 stream that closed without producing content is a
+        // switchable failure - try the next model while nothing was committed.
+        if (!sawContent && !res.headersSent) {
+          log.warn(`[Proxy] Empty stream (no content) from ${model.name}`);
+          smartHealth.reportFailure(healthKey(model));
+          if (fallbackToNext('Empty stream', 'upstream closed without content')) return;
+          beginStream(); // no fallback left: answer with a valid empty completion
         }
 
         const finalChunk = {
@@ -1840,13 +1892,24 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
             const isStream = req.url!.includes('streamGenerateContent') || req.url!.includes('alt=sse');
             const actualGeminiBody = (reqJson.request || reqJson) as GeminiRequestBody;
             // Resolve fileData URIs then route to translator.
-            // Part 1: specific-model requests get a real rotation chain too.
+            // Part 1: specific-model requests get a real rotation chain too,
+            // ranked by task fit + health (free-router style), not config order.
             // Rotation OFF: direct dial only, no fallback chain.
             const chain = loadRouterSettings().autoRouter
-              ? customModels.filter((m) => m !== matchedCustomModel && !isAutoModel(m))
+              ? rankFallbacks(matchedCustomModel, customModels, actualGeminiBody as unknown as AutoGeminiBody)
               : [];
             resolveFileData(actualGeminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
               handleCustomModelRequest(res, matchedCustomModel, actualGeminiBody, isStream, 0, chain);
+            });
+            return;
+          } else if (isAutoIdentity(modelName) || isAutoIdentity(modelId)) {
+            // Toggle OFF hides Auto from the picker, but in-flight Auto
+            // requests must still get the actionable error (Part 7).
+            log.info(`[Auto] UI selected: ${modelName} (modelId: ${modelId ?? 'n/a'}) -> resolved: custom-auto-router`);
+            const isStream = req.url!.includes('streamGenerateContent') || req.url!.includes('alt=sse');
+            const actualGeminiBody = (reqJson.request || reqJson) as GeminiRequestBody;
+            resolveFileData(actualGeminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
+              handleAutoModelRequest(res, actualGeminiBody, isStream);
             });
             return;
           }
@@ -1898,13 +1961,29 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         }
         try {
           const geminiBody = JSON.parse(bodyStr) as GeminiRequestBody;
-          // Part 1: specific-model requests get a real rotation chain too.
+          // Part 1: specific-model requests get a real rotation chain too,
+          // ranked by task fit + health (free-router style), not config order.
           // Rotation OFF: direct dial only, no fallback chain.
           const chain = loadRouterSettings().autoRouter
-            ? customModels.filter((m) => m !== matchedCustomModel && !isAutoModel(m))
+            ? rankFallbacks(matchedCustomModel, customModels, geminiBody as unknown as AutoGeminiBody)
             : [];
           resolveFileData(geminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
             handleCustomModelRequest(res, matchedCustomModel, geminiBody, isStandardStream, 0, chain);
+          });
+          return;
+        } catch (e) {
+          log.error('[Proxy] JSON parse error in request body:', e);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Invalid JSON request body' } }));
+          return;
+        }
+      } else if (isAutoIdentity(matchedModelName)) {
+        // Toggle OFF hides Auto from the picker, but in-flight Auto requests
+        // must still get the actionable error (Part 7).
+        try {
+          const geminiBody = JSON.parse(bodyStr) as GeminiRequestBody;
+          resolveFileData(geminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
+            handleAutoModelRequest(res, geminiBody, isStandardStream);
           });
           return;
         } catch (e) {
