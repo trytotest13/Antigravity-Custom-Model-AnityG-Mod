@@ -64,7 +64,7 @@ import {
 } from './proxy/shared';
 
 // Model configuration & capability detection
-import { detectModelCapabilities, detectModelCapabilitiesByName } from './proxy/modelUtils';
+import { detectModelCapabilities, detectModelCapabilitiesByName, healthKey } from './proxy/modelUtils';
 
 // Provider translator registry (auto-discovers translators from proxy/translators/)
 import * as registry from './proxy/registry';
@@ -74,15 +74,14 @@ import { buildAutoModel, isAutoModel, planAutoRoute, type AutoGeminiBody } from 
 
 // Model Dashboard: browser UI + REST API over custom_models.json (served at /dashboard)
 import * as dashboard from './proxy/dashboard';
-import { smartHealth, shouldSwitch } from './proxy/smartHealth';
+import { smartHealth, shouldSwitch, shouldSwitchBody } from './proxy/smartHealth';
 
-// Dynamic imports (stays require for Electron-specific modules)
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const cryptoStore = require('./cryptoStore');
+// Electron-safeStorage key store (imported statically so tests can mock it)
+import * as cryptoStore from './cryptoStore';
 
 // ─── Model Helpers ────────────────────────────────────────────────────────
 
-function generateModelPlaceholderId(model: CustomModel): string {
+export function generateModelPlaceholderId(model: CustomModel): string {
   // ponytail: hash includes provider+external id so same model name on 2 providers gets distinct ids
   const input = `${model.provider || ''}:${model.displayName || model.name || 'custom-model'}:${model.externalModelName || ''}`.toLowerCase();
   let hash = 5381;
@@ -99,7 +98,41 @@ function getCustomModelsPath(): string {
   return path.join(geminiDir, 'custom_models.json');
 }
 
-function toSlug(model: CustomModel): string {
+// ─── Router Settings (dashboard ON/OFF toggle) ────────────────────────────
+
+function getRouterSettingsPath(): string {
+  const geminiDir = path.join(app.getPath('home'), '.gemini', 'antigravity');
+  return path.join(geminiDir, 'router_settings.json');
+}
+
+export interface RouterSettings {
+  /** Master switch for Auto Rotation / Smart Router. Default: ON. */
+  autoRouter: boolean;
+}
+
+/** Reads router_settings.json; defaults to ON when missing or corrupt. */
+export function loadRouterSettings(): RouterSettings {
+  try {
+    const raw = JSON.parse(fs.readFileSync(getRouterSettingsPath(), 'utf-8')) as Partial<RouterSettings>;
+    return { autoRouter: raw.autoRouter !== false };
+  } catch {
+    return { autoRouter: true };
+  }
+}
+
+function saveRouterSettings(s: RouterSettings): boolean {
+  try {
+    const filePath = getRouterSettingsPath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(s, null, 2), 'utf-8');
+    return true;
+  } catch (e) {
+    log.error('[Router] Failed to write router_settings.json', e);
+    return false;
+  }
+}
+
+export function toSlug(model: CustomModel): string {
   // ponytail: virtual Auto keeps its stable legacy slug so existing picks keep routing
   if ((model.externalModelName || '') === 'auto-router') return 'custom-auto-router';
   // ponytail: provider prefix keeps same model id on different providers distinct (was colliding to one entry)
@@ -113,7 +146,7 @@ function toSlug(model: CustomModel): string {
 }
 
 // Legacy slug (pre-provider-prefix) so previously-picked models still route after upgrade.
-function toLegacySlug(model: CustomModel): string {
+export function toLegacySlug(model: CustomModel): string {
   return (
     'custom-' +
     (model.externalModelName || model.name || '')
@@ -149,6 +182,24 @@ function fallbackModelsMap(models: CustomModel[]): Record<string, unknown> {
  */
 function getRoutableModels(): CustomModel[] {
   const models = loadCustomModels();
+  // Part 8: surface slug/placeholder collisions loudly - a collision can make
+  // the IDE resolve a pick to the wrong model without any visible error.
+  const seen = new Map<string, string>();
+  for (const m of models) {
+    for (const id of [toSlug(m), toLegacySlug(m), generateModelPlaceholderId(m)]) {
+      const prev = seen.get(id);
+      if (prev && prev !== m.displayName) {
+        log.warn(`[Proxy] Model ID collision: "${id}" is shared by "${prev}" and "${m.displayName}"`);
+      } else if (!prev) {
+        seen.set(id, m.displayName);
+      }
+    }
+    if (!isAutoModel(m) && (toSlug(m) === 'custom-auto-router' || toLegacySlug(m) === 'custom-auto-router')) {
+      log.warn(`[Proxy] Model "${m.displayName}" squats on the auto-router identity and may hijack Auto selection`);
+    }
+  }
+  // Dashboard toggle OFF: hide the virtual Auto entry from the IDE picker.
+  if (!loadRouterSettings().autoRouter) return models;
   if (models.length === 0 || models.some(isAutoModel)) return models;
   return [...models, buildAutoModel()];
 }
@@ -174,6 +225,20 @@ function handleAutoModelRequest(
   isStream: boolean,
 ): void {
   const realModels = loadCustomModels().filter((m) => !isAutoModel(m));
+  // Dashboard toggle OFF: Auto requests get a clear, actionable error.
+  if (!loadRouterSettings().autoRouter) {
+    log.warn('[Auto] Auto (Smart Router) is turned OFF - rejecting request');
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        error: {
+          message:
+            'Auto Rotation / Smart Router is turned OFF. Open the proxy dashboard (http://127.0.0.1:<port>/dashboard) and press "Turn ON" to re-enable it.',
+        },
+      }),
+    );
+    return;
+  }
   if (realModels.length === 0) {
     log.error('[Auto] No custom models configured - Auto has nothing to route to');
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -260,7 +325,7 @@ function loadCustomModels(): CustomModel[] {
     } catch (e) {
       log.error('[Proxy] Failed to write default custom_models.json', e);
     }
-    return cryptoStore.decryptModels(defaultModels.models);
+    return cryptoStore.decryptModels(defaultModels.models as unknown as Parameters<typeof cryptoStore.decryptModels>[0]) as unknown as CustomModel[];
   }
 
   try {
@@ -280,7 +345,7 @@ function loadCustomModels(): CustomModel[] {
     if (needsMigration) {
       log.info('[Proxy] Plaintext custom_models.json detected. Migrating to encrypted format...');
       cryptoStore.backupFile(filePath);
-      const encryptedModels = cryptoStore.encryptModels(models);
+      const encryptedModels = cryptoStore.encryptModels(models as unknown as Parameters<typeof cryptoStore.encryptModels>[0]);
       try {
         fs.writeFileSync(filePath, JSON.stringify({ models: encryptedModels }, null, 2), { encoding: 'utf-8', mode: 0o600 });
         try {
@@ -289,13 +354,13 @@ function loadCustomModels(): CustomModel[] {
           // non-POSIX (Windows) - ignore
         }
         log.info('[Proxy] Successfully migrated custom_models.json to encrypted format.');
-        return cryptoStore.decryptModels(encryptedModels);
+        return cryptoStore.decryptModels(encryptedModels) as unknown as CustomModel[];
       } catch (err) {
         log.error('[Proxy] Failed to write encrypted custom_models.json during migration:', err);
       }
     }
 
-    const decrypted = cryptoStore.decryptModels(models) as CustomModel[];
+    const decrypted = cryptoStore.decryptModels(models as unknown as Parameters<typeof cryptoStore.decryptModels>[0]) as unknown as CustomModel[];
 
     // Validate all models
     const validModels: CustomModel[] = [];
@@ -490,13 +555,19 @@ function parseRetryAfter(headers: Record<string, string | string[] | undefined>)
   return 0;
 }
 
-function handleCustomModelRequest(
+export interface AttemptRecord {
+  model: string;
+  reason: string;
+}
+
+export function handleCustomModelRequest(
   res: http.ServerResponse,
   model: CustomModel,
   geminiBody: GeminiRequestBody,
   isStream: boolean,
   retryCount = 0,
   fallbacks: CustomModel[] = [],
+  attempts: AttemptRecord[] = [],
 ): void {
   // P3-18: Configurable max retries per model (default 3, min 0, max 5)
   const MAX_RETRIES = Math.min(Math.max(model.maxRetries ?? 3, 0), 5);
@@ -504,15 +575,34 @@ function handleCustomModelRequest(
   const startMs = Date.now();
 
   /**
-   * Terminal-failure escape hatch for the Auto router: when this model is
-   * beyond retries, hand the SAME request to the next model in the chain.
-   * Only possible before any bytes are written to the IDE.
+   * Terminal-failure escape hatch: when this model is beyond retries, hand
+   * the SAME request to the next model in the chain. Only possible before
+   * any bytes are written to the IDE (Part 4: never concatenate partial output).
    */
   const fallbackToNext = (where: string, detail: string): boolean => {
     if (fallbacks.length === 0 || res.headersSent) return false;
-    log.warn(`[Proxy] ${where} on ${model.name} (${detail}) - falling back to ${fallbacks[0].displayName}`);
-    handleCustomModelRequest(res, fallbacks[0], geminiBody, isStream, 0, fallbacks.slice(1));
+    log.warn(`[Router] ${model.displayName} failed: ${detail} - switching to ${fallbacks[0].displayName}`);
+    const nextAttempts = [...attempts, { model: model.displayName, reason: detail }];
+    handleCustomModelRequest(res, fallbacks[0], geminiBody, isStream, 0, fallbacks.slice(1), nextAttempts);
     return true;
+  };
+
+  /** Part 25: every model in the chain failed - report honestly, no secrets. */
+  const allFailed = (lastStatus: number, lastBody: string): void => {
+    const finalAttempts = [...attempts, { model: model.displayName, reason: `HTTP ${lastStatus}` }];
+    const list = finalAttempts.map((a, i) => `${i + 1}. ${a.model} — ${a.reason}`).join('\n');
+    log.error(`[Router] All configured AI providers failed:\n${list}`);
+    if (!res.headersSent) {
+      res.writeHead(lastStatus, { 'Content-Type': 'application/json' });
+    }
+    res.end(
+      JSON.stringify({
+        error: {
+          code: lastStatus,
+          message: `All configured AI providers failed.\n\nAttempted:\n${list}\n\nLast upstream response:\n${lastBody.substring(0, 500)}`,
+        },
+      }),
+    );
   };
 
   // ponytail: enc: keys need Electron safeStorage; standalone proxy can't decrypt -> fail loud, not a cryptic 401
@@ -532,7 +622,10 @@ function handleCustomModelRequest(
     return;
   }
 
-  const provider = model.provider === 'custom' || model.provider === 'openrouter' ? 'openai' : model.provider;
+  const provider =
+    model.provider === 'custom' || model.provider === 'openrouter' || model.provider === 'free-router'
+      ? 'openai'
+      : model.provider;
 
   const payload = registry.translateRequest(provider, geminiBody, model.externalModelName);
   const headers = registry.getProviderHeaders(provider, model.apiKey);
@@ -546,7 +639,7 @@ function handleCustomModelRequest(
   // P3-16: Ollama uses URL normalization for default port and endpoint
   if (provider === 'google' || provider === 'ollama') {
     finalUrlStr = registry.getProviderUrl(finalUrlStr, model.externalModelName, isStream, provider);
-  } else if (provider === 'openai' || model.provider === 'custom' || model.provider === 'openrouter') {
+  } else if (provider === 'openai' || model.provider === 'custom' || model.provider === 'openrouter' || model.provider === 'free-router') {
     const urlLower = finalUrlStr.toLowerCase();
     if (!urlLower.includes('/chat/completions') && !urlLower.includes('/completions')) {
       if (finalUrlStr.endsWith('/v1')) {
@@ -591,20 +684,27 @@ function handleCustomModelRequest(
     });
 
     if (isStream) {
-      // Check for API errors BEFORE writing streaming headers
+      // Check for API errors BEFORE writing streaming headers (Part 4)
       if (apiRes.statusCode! >= 400) {
         let errorBody = '';
         apiRes.on('data', (chunk: Buffer) => errorBody += chunk.toString());
         apiRes.on('end', () => {
-          log.error(`[Proxy] Stream API error (${apiRes.statusCode}) for ${model.name}: ${errorBody.substring(0, 300)}`);
-          smartHealth.reportFailure(model.name);
-          // 4xx client errors are not retryable on the same model - fall through to next model.
-          if (retryCount < MAX_RETRIES && shouldSwitch(apiRes.statusCode).retrySame) {
+          log.error(`[Proxy] Stream API error (${apiRes.statusCode}) for ${model.name}`);
+          smartHealth.reportFailure(healthKey(model));
+          // Part 3: hard-quota bodies skip the retry budget entirely.
+          const verdict = shouldSwitchBody(apiRes.statusCode, errorBody);
+          if (retryCount < MAX_RETRIES && verdict.retrySame) {
             log.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks), 1000 * (retryCount + 1));
+            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts), 1000 * (retryCount + 1));
             return;
           }
-          if (fallbackToNext('Stream API error', String(apiRes.statusCode))) return;
+          // Part 2: only switchable failures burn the chain; plain 400s fail fast.
+          if (verdict.switch && fallbackToNext('Stream API error', `${apiRes.statusCode} ${verdict.reason}`)) return;
+          // Part 25: end of a chain - report every attempt honestly.
+          if (attempts.length > 0 && !res.headersSent) {
+            allFailed(apiRes.statusCode!, errorBody);
+            return;
+          }
           res.writeHead(apiRes.statusCode!, { 'Content-Type': 'application/json' });
           res.end(errorBody);
         });
@@ -691,33 +791,44 @@ function handleCustomModelRequest(
       let body = '';
       apiRes.on('data', (chunk: Buffer) => (body += chunk));
       apiRes.on('end', () => {
-        // Retry on 5xx with exponential backoff
+        // Retry on 5xx with exponential backoff (Part 3: quota-aware)
         if (apiRes.statusCode! >= 500 && apiRes.statusCode! < 600 && retryCount < MAX_RETRIES) {
-          const retryAfter = parseRetryAfter(apiRes.headers);
-          const delay = retryAfter > 0 ? retryAfter : 1000 * Math.pow(2, retryCount);
-          log.warn(
-            `[Proxy] Server error ${apiRes.statusCode} for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
-          );
-          setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks), delay);
-          return;
+          if (shouldSwitchBody(apiRes.statusCode, body).retrySame) {
+            const retryAfter = parseRetryAfter(apiRes.headers);
+            const delay = retryAfter > 0 ? retryAfter : 1000 * Math.pow(2, retryCount);
+            log.warn(
+              `[Proxy] Server error ${apiRes.statusCode} for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
+            );
+            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts), delay);
+            return;
+          }
         }
 
-        // Retry on 429 with Retry-After header support + exponential backoff
+        // Retry on 429 with Retry-After header support + exponential backoff (Part 3: quota-aware)
         if (apiRes.statusCode === 429 && retryCount < MAX_RETRIES) {
-          const retryAfter = parseRetryAfter(apiRes.headers);
-          const delay = retryAfter > 0 ? retryAfter : 2000 * Math.pow(2, retryCount);
-          log.warn(
-            `[Proxy] Rate limited (429) for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
-          );
-          setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks), delay);
-          return;
+          if (shouldSwitchBody(apiRes.statusCode, body).retrySame) {
+            const retryAfter = parseRetryAfter(apiRes.headers);
+            const delay = retryAfter > 0 ? retryAfter : 2000 * Math.pow(2, retryCount);
+            log.warn(
+              `[Proxy] Rate limited (429) for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
+            );
+            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts), delay);
+            return;
+          }
         }
 
         if (apiRes.statusCode! >= 400) {
           // P0-3: Only log status code and model name, NOT response body content
           log.error(`[Proxy] API error (${apiRes.statusCode}) for ${model.name}`);
-          smartHealth.reportFailure(model.name);
-          if (fallbackToNext('API error', String(apiRes.statusCode))) return;
+          smartHealth.reportFailure(healthKey(model));
+          const verdict = shouldSwitchBody(apiRes.statusCode, body);
+          // Part 2: switchable failures rotate the chain; client errors fail fast.
+          if (verdict.switch && fallbackToNext('API error', `${apiRes.statusCode} ${verdict.reason}`)) return;
+          // Part 25: end of a chain - report every attempt honestly.
+          if (attempts.length > 0 && !res.headersSent) {
+            allFailed(apiRes.statusCode!, body);
+            return;
+          }
           res.writeHead(apiRes.statusCode!, { 'Content-Type': 'application/json' });
           res.end(body);
           return;
@@ -737,7 +848,9 @@ function handleCustomModelRequest(
           }
 
           const providerForResponse =
-            model.provider === 'custom' || model.provider === 'openrouter' ? 'openai' : model.provider;
+            model.provider === 'custom' || model.provider === 'openrouter' || model.provider === 'free-router'
+              ? 'openai'
+              : model.provider;
           const mapped = registry.translateResponse(providerForResponse, parsed, model.name);
 
           const cloudCodeResponse = {
@@ -748,14 +861,15 @@ function handleCustomModelRequest(
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(cloudCodeResponse));
-          smartHealth.reportSuccess(model.name, Date.now() - startMs);
+          smartHealth.reportSuccess(healthKey(model), Date.now() - startMs);
+          log.info(`[Router] ${model.displayName} succeeded`);
         } catch (e) {
           log.error('[Proxy] Failed to map response:', e);
 
           if (retryCount < MAX_RETRIES) {
             log.warn(`[Proxy] Parse error for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
             setTimeout(
-              () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks),
+              () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts),
               1000 * (retryCount + 1),
             );
             return;
@@ -771,18 +885,23 @@ function handleCustomModelRequest(
   request.setTimeout(REQUEST_TIMEOUT_MS, () => {
     log.error(`[Proxy] Request timeout (${REQUEST_TIMEOUT_MS}ms) for ${model.name}`);
     request.destroy();
-    smartHealth.reportFailure(model.name);
+    smartHealth.reportFailure(healthKey(model));
 
     if (retryCount < MAX_RETRIES) {
       log.warn(`[Proxy] Timeout for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
       setTimeout(
-        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks),
+        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts),
         1000 * (retryCount + 1),
       );
       return;
     }
 
     if (fallbackToNext('Timeout', `${REQUEST_TIMEOUT_MS}ms`)) return;
+    // Part 25: end of a chain - report every attempt honestly.
+    if (attempts.length > 0 && !res.headersSent) {
+      allFailed(504, `Request timeout after ${REQUEST_TIMEOUT_MS / 1000}s`);
+      return;
+    }
     if (!res.headersSent) {
       res.writeHead(504, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: `Request timeout after ${REQUEST_TIMEOUT_MS / 1000}s` } }));
@@ -791,18 +910,23 @@ function handleCustomModelRequest(
 
   request.on('error', (err) => {
     log.error('[Proxy] Custom Model Request Error:', err);
-    smartHealth.reportFailure(model.name);
+    smartHealth.reportFailure(healthKey(model));
 
     if (retryCount < MAX_RETRIES && shouldSwitch(undefined, err as Error).retrySame) {
       log.warn(`[Proxy] Network error for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
       setTimeout(
-        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks),
+        () => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks, attempts),
         1000 * (retryCount + 1),
       );
       return;
     }
 
     if (fallbackToNext('Network error', err.message)) return;
+    // Part 25: end of a chain - report every attempt honestly.
+    if (attempts.length > 0 && !res.headersSent) {
+      allFailed(502, `Network error: ${err.message}`);
+      return;
+    }
 
     if (isStream) {
       if (!res.headersSent) {
@@ -1101,7 +1225,7 @@ function handleGetAvailableModelsProxy(
 function saveCustomModels(models: CustomModel[]): boolean {
   try {
     const filePath = getCustomModelsPath();
-    const encrypted = cryptoStore.encryptModels(models);
+    const encrypted = cryptoStore.encryptModels(models as unknown as Parameters<typeof cryptoStore.encryptModels>[0]);
     fs.writeFileSync(filePath, JSON.stringify({ models: encrypted }, null, 2), 'utf-8');
     return true;
   } catch (e) {
@@ -1125,7 +1249,15 @@ function handleDashboardRoute(
   body: string,
 ): boolean {
   const url = req.url!.split('?')[0];
-  if (url !== '/dashboard' && url !== '/api/models' && url !== '/api/models/delete' && url !== '/api/models/test' && url !== '/api/models/key') {
+  if (
+    url !== '/dashboard' &&
+    url !== '/api/models' &&
+    url !== '/api/models/delete' &&
+    url !== '/api/models/test' &&
+    url !== '/api/models/key' &&
+    url !== '/api/router/status' &&
+    url !== '/api/router/toggle'
+  ) {
     return false;
   }
 
@@ -1150,6 +1282,22 @@ function handleDashboardRoute(
     let parsed: Record<string, unknown> = {};
     if (req.method === 'POST' && body) {
       parsed = JSON.parse(body) as Record<string, unknown>;
+    }
+
+    // Dashboard toggle: Auto Rotation / Smart Router ON-OFF.
+    if (req.method === 'GET' && url === '/api/router/status') {
+      json(200, { autoRouter: loadRouterSettings().autoRouter });
+      return true;
+    }
+    if (req.method === 'POST' && url === '/api/router/toggle') {
+      const enabled = parsed.enabled !== false; // absent -> ON
+      if (!saveRouterSettings({ autoRouter: enabled })) {
+        json(500, { error: 'Could not write router_settings.json (see proxy log).' });
+        return true;
+      }
+      log.info(`[Router] Auto Rotation / Smart Router turned ${enabled ? 'ON' : 'OFF'} via dashboard`);
+      json(200, { autoRouter: enabled });
+      return true;
     }
 
     if (req.method === 'POST' && url === '/api/models') {
@@ -1678,6 +1826,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
               `[Proxy] Intercepting Cloud Code generation for custom model: ${modelName} => ${matchedCustomModel.displayName}`,
             );
             if (isAutoModel(matchedCustomModel)) {
+              // Part 7: make the UI-selection -> backend-resolution explicit.
+              log.info(
+                `[Auto] UI selected: ${modelName} (modelId: ${modelId ?? 'n/a'}) -> resolved: custom-auto-router`,
+              );
               const isStream = req.url!.includes('streamGenerateContent') || req.url!.includes('alt=sse');
               const actualGeminiBody = (reqJson.request || reqJson) as GeminiRequestBody;
               resolveFileData(actualGeminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
@@ -1687,9 +1839,14 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
             }
             const isStream = req.url!.includes('streamGenerateContent') || req.url!.includes('alt=sse');
             const actualGeminiBody = (reqJson.request || reqJson) as GeminiRequestBody;
-            // Resolve fileData URIs then route to translator
+            // Resolve fileData URIs then route to translator.
+            // Part 1: specific-model requests get a real rotation chain too.
+            // Rotation OFF: direct dial only, no fallback chain.
+            const chain = loadRouterSettings().autoRouter
+              ? customModels.filter((m) => m !== matchedCustomModel && !isAutoModel(m))
+              : [];
             resolveFileData(actualGeminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
-              handleCustomModelRequest(res, matchedCustomModel, actualGeminiBody, isStream);
+              handleCustomModelRequest(res, matchedCustomModel, actualGeminiBody, isStream, 0, chain);
             });
             return;
           }
@@ -1722,6 +1879,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
       if (matchedCustomModel) {
         if (isAutoModel(matchedCustomModel)) {
+          // Part 7: make the UI-selection -> backend-resolution explicit.
+          log.info(
+            `[Auto] UI selected: ${matchedModelName} -> resolved: custom-auto-router`,
+          );
           try {
             const geminiBody = JSON.parse(bodyStr) as GeminiRequestBody;
             resolveFileData(geminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
@@ -1737,8 +1898,13 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         }
         try {
           const geminiBody = JSON.parse(bodyStr) as GeminiRequestBody;
+          // Part 1: specific-model requests get a real rotation chain too.
+          // Rotation OFF: direct dial only, no fallback chain.
+          const chain = loadRouterSettings().autoRouter
+            ? customModels.filter((m) => m !== matchedCustomModel && !isAutoModel(m))
+            : [];
           resolveFileData(geminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
-            handleCustomModelRequest(res, matchedCustomModel, geminiBody, isStandardStream);
+            handleCustomModelRequest(res, matchedCustomModel, geminiBody, isStandardStream, 0, chain);
           });
           return;
         } catch (e) {

@@ -17,7 +17,7 @@
  */
 
 import type { CustomModel } from '../proxy';
-import { detectModelCapabilities } from './modelUtils';
+import { detectModelCapabilities, healthKey } from './modelUtils';
 import { smartHealth } from './smartHealth';
 
 // ─── Constants ────────────────────────────────────────────────────────────
@@ -39,7 +39,9 @@ const FAMILY_HINTS: Record<string, string[]> = {
   vision: ['gemini', 'gpt-4o', 'claude', 'vision', 'llava', 'pixtral'],
   long: ['gemini', 'gpt-4o', 'claude', 'llama-3.3', 'deepseek'],
   quick: ['mini', 'flash', 'nano', 'haiku', '8b', '3b', 'small', 'lite'],
-  chat: ['deepseek', 'claude', 'gpt-4o', 'llama', 'qwen', 'gemini'],
+  // Balanced chat: no single family dominates; deepseek demoted from 1st so
+  // generic chat rotates among claude/gpt/gemini instead of always DeepSeek.
+  chat: ['claude', 'gpt-4o', 'gemini', 'deepseek', 'llama', 'qwen'],
 };
 
 const TASK_BASE = 60;
@@ -48,6 +50,16 @@ const THINKING_BONUS = 8; // reward real reasoning models for brainy tasks
 const HEALTH_WEIGHT = 12; // points lost per unit of breaker penalty
 const WASTE_STEP = 200_000; // 1 point lost per 200k tokens of unused window
 const WASTE_CAP = 10;
+
+// Tie rotation (Part 6): candidates within this epsilon of the top score are
+// "equivalent" and the winner rotates among them. Clear winners stay fixed.
+const TIE_EPSILON = 12;
+let tieRotationCursor = 0;
+
+// Name-based reasoner detection: the provider-based isThinking flag marks
+// every openai/anthropic/openrouter model as thinking, so it differentiates
+// nothing. Real reasoners carry the name signal.
+const REASONER_PATTERN = /r1|reasoner|o1-|o3-|thinking|deepseek-r/i;
 
 // Strong code signals: essentially unambiguous on their own. One pattern per
 // signal - countMatches weighs per pattern, so alternatives must be split out.
@@ -268,14 +280,16 @@ function scoreFor(
     }
   }
 
-  // 2. Actual capability: thinking models get extra credit on brainy tasks.
-  if ((task === 'code' || task === 'reasoning' || task === 'long') && cap.isThinking) {
+  // 2. Actual capability: real reasoners (by name, not provider) get extra
+  //    credit on brainy tasks. Provider flags mark everything thinking, which
+  //    made the bonus universal and useless for ranking.
+  if ((task === 'code' || task === 'reasoning' || task === 'long') && REASONER_PATTERN.test(n)) {
     score += THINKING_BONUS;
-    bits.push('thinking');
+    bits.push('reasoner');
   }
 
   // 3. Health: the breaker's penalty (failures, slow EWMA) pulls a model down.
-  score -= smartHealth.penalty(m.name) * HEALTH_WEIGHT;
+  score -= smartHealth.penalty(healthKey(m)) * HEALTH_WEIGHT;
 
   // 4. Right-sizing: a window much bigger than needed is a mild negative so
   //    cheap/small models win ties, but it can never beat task fit.
@@ -340,7 +354,7 @@ function explainRoute(models: CustomModel[], body: AutoGeminiBody): RouteExplana
   const fitting = cands.filter((m) => capOf(m).maxTokens >= need);
   const pool0 = fitting.length > 0 ? fitting : cands;
   // Breaker is advisory: skip open models unless that would leave nothing to try.
-  const usable = pool0.filter((m) => !smartHealth.isOpen(m.name));
+  const usable = pool0.filter((m) => !smartHealth.isOpen(healthKey(m)));
   const pool = usable.length > 0 ? usable : pool0;
 
   const scored = pool.map((m) => ({ m, ...scoreFor(m, cls.task, need) }));
@@ -351,10 +365,24 @@ function explainRoute(models: CustomModel[], body: AutoGeminiBody): RouteExplana
       a.m.displayName.localeCompare(b.m.displayName),
   );
 
+  // Tie rotation (Part 6): near-equal candidates take turns winning so the
+  // same model doesn't monopolize chat traffic. A clear winner (gap > epsilon
+  // over the runner-up) keeps position 0 deterministically.
+  const top = scored[0].score;
+  const tiedCount = scored.filter((s) => top - s.score <= TIE_EPSILON).length;
+  let rotated = 0;
+  if (tiedCount > 1) {
+    rotated = tieRotationCursor % tiedCount;
+    tieRotationCursor = (tieRotationCursor + 1) % tiedCount;
+    const [winner] = scored.splice(rotated, 1);
+    scored.unshift(winner);
+  }
+
   const chain = scored.slice(0, MAX_CHAIN).map((s) => s.m);
   const win = scored[0];
   const why = win.bits.length > 0 ? ` (${win.bits.slice(0, 3).join(', ')})` : '';
-  return { chain, reason: `${cls.reason}; ${win.m.displayName}${why}` };
+  const tieNote = tiedCount > 1 ? ` [rotated among ${tiedCount} near-tied]` : '';
+  return { chain, reason: `${cls.reason}; ${win.m.displayName}${why}${tieNote}` };
 }
 
 // ─── Local compression (last resort, no extra API call) ───────────────────

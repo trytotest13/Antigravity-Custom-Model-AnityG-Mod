@@ -64,6 +64,7 @@ const OPENAI_FAMILY = new Set([
   'nvidia',
   'opencode',
   'codestral',
+  'free-router',
 ]);
 const ANTHROPIC_FAMILY = new Set([
   'anthropic',

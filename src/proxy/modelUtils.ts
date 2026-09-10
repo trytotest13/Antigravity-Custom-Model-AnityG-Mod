@@ -84,3 +84,14 @@ export function detectModelCapabilitiesByName(modelName: string): ModelNameCapab
     isThinkingModel: THINKING_MODEL_PATTERN.test(lower),
   };
 }
+
+/**
+ * Stable health key: provider + external model name. Distinguishes the same
+ * model name served by two providers (e.g. openai:gpt-4o vs free-router:gpt-4o)
+ * so one route's breaker state never poisons the other.
+ */
+export function healthKey(m: { provider?: string; externalModelName?: string; name?: string }): string {
+  const provider = (m.provider || 'custom').toLowerCase();
+  const model = (m.externalModelName || m.name || 'unknown').replace(/^models\//, '').toLowerCase();
+  return `${provider}:${model}`;
+}

@@ -53,6 +53,7 @@ export function validateCustomModel(model: unknown): ValidationResult {
     'lmstudio',
     'llamacpp',
     'nvidia',
+    'free-router',
   ];
   if (!validProviders.includes(provider)) {
     return { valid: false, error: `Unsupported provider: ${provider}. Must be one of: ${validProviders.join(', ')}` };

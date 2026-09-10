@@ -34,6 +34,27 @@ export function shouldSwitch(status?: number, err?: Error): SwitchVerdict {
   return { switch: false, retrySame: false, reason: 'unknown' };
 }
 
+/**
+ * Body snippets that indicate HARD quota/rate exhaustion (Part 3). When the
+ * upstream clearly says the quota is gone, retrying the same model is wasted
+ * budget - switch immediately. Snippets are matched, never logged.
+ */
+const QUOTA_PATTERN =
+  /quota\s*(?:exceeded|exhausted)|rate\s*limit\s*(?:exceeded|reached|hit)|resource\s*exhausted|too many requests|daily\s*limit|(?:tokens?|requests?)\s*per\s*minute|insufficient\s*(?:quota|credits?)|capacity|temporarily unavailable|exceeded your current quota/i;
+
+/**
+ * Classifies a failed response using BOTH status and (safe, snippet-only)
+ * body inspection. Hard quota signals override the retry budget: switch now.
+ */
+export function shouldSwitchBody(status: number | undefined, bodySnippet: string): SwitchVerdict {
+  const base = shouldSwitch(status);
+  if (QUOTA_PATTERN.test(bodySnippet || '')) {
+    // Hard quota exhaustion: switching is mandatory, same-model retry is not.
+    return { switch: true, retrySame: false, reason: 'quota exhausted' };
+  }
+  return base;
+}
+
 interface Entry {
   fails: number;
   openUntil: number;

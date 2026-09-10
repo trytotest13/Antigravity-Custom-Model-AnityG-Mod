@@ -27,7 +27,8 @@ export const PROVIDERS: ProviderPreset[] = [
   { id: 'google', label: 'Google AI Studio (Gemini)', url: 'https://generativelanguage.googleapis.com/v1beta', needsKey: true, keyHint: 'AIza...' },
   { id: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', needsKey: true, keyHint: 'sk-or-v1-...' },
   { id: 'ollama', label: 'Ollama (Local)', url: 'http://localhost:11434/v1/chat/completions', needsKey: false, keyHint: 'no key needed' },
-  { id: 'custom', label: 'Custom / Other', url: '', needsKey: true, keyHint: "provider's API key" },
+  { id: 'free-router', label: 'Free Router (Local Gateway)', url: 'http://127.0.0.1:8787/v1', needsKey: false, keyHint: 'no key needed' },
+  { id: 'custom', label: 'Custom (OpenAI-compatible)', url: '', needsKey: true, keyHint: "provider's API key" },
 ];
 
 /** Provider ids accepted from the dashboard form (schemaValidator allows more; these are the ones we preset). */
@@ -159,7 +160,7 @@ export async function testModelConnection(input: {
   apiUrl: string;
   externalModelName: string;
 }): Promise<TestResult> {
-  const provider = input.provider === 'custom' || input.provider === 'openrouter' ? 'openai' : input.provider;
+  const provider = input.provider === 'custom' || input.provider === 'openrouter' || input.provider === 'free-router' ? 'openai' : input.provider;
   const pingBody = {
     contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: pong' }] }],
     generationConfig: { maxOutputTokens: 16 },
@@ -250,9 +251,10 @@ export function buildDashboardHtml(): string {
   .badge.openai { background: #103f2b; color: #34d399; }
   .badge.anthropic { background: #3f2210; color: #f59e0b; }
   .badge.google { background: #102a3f; color: #60a5fa; }
-  .badge.openrouter { background: #2a103f; color: #c084fc; }
+  .badge.openrouter { background: #6366f1; color: #e0e7ff; }
   .badge.ollama { background: #333; color: #ccc; }
-  .badge.custom { background: #26324a; color: #93c5fd; }
+  .badge.free-router { background: #0d9488; color: #ccfbf1; }
+  .badge.custom { background: #64748b; color: #f1f5f9; }
   .card .url { color: #8a8a8a; font-size: 12px; white-space: nowrap; overflow: hidden;
                text-overflow: ellipsis; margin-top: 2px; }
   .card .key { color: #777; font-size: 11px; margin-top: 2px; }
@@ -287,6 +289,23 @@ export function buildDashboardHtml(): string {
   .ok { color: #34d399; } .bad { color: #f87171; }
   #status { font-size: 13px; margin: 10px 0; min-height: 18px; }
   .hint { color: #8a8a8a; font-size: 12px; margin-top: 6px; }
+  /* Auto Rotation / Smart Router master switch */
+  .toggle-card { background: linear-gradient(135deg, #16241c 0%, #1b1b1b 55%); border: 1px solid #2e4a3a;
+                 border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px; display: flex;
+                 align-items: center; gap: 14px; }
+  .toggle-card .t-info { flex: 1; min-width: 0; }
+  .toggle-card .t-title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .toggle-card .t-sub { color: #8a8a8a; font-size: 12px; margin-top: 2px; }
+  .toggle-card .t-state { font-size: 11px; font-weight: 700; letter-spacing: .5px; padding: 2px 9px;
+                          border-radius: 999px; text-transform: uppercase; }
+  .toggle-card .t-state.on { background: #052e16; color: #34d399; border: 1px solid #16a34a66; }
+  .toggle-card .t-state.off { background: #2a0a0a; color: #f87171; border: 1px solid #dc262666; }
+  #autoToggle { min-width: 132px; font-weight: 600; border-radius: 999px; padding: 9px 18px; }
+  #autoToggle.on { background: #052e16; color: #34d399; border-color: #16a34a; }
+  #autoToggle.on:hover { background: #0a3d1f; }
+  #autoToggle.off { background: #2a0a0a; color: #f87171; border-color: #dc2626; }
+  #autoToggle.off:hover { background: #3d0d0d; }
+  #autoToggle:disabled { opacity: .55; cursor: wait; }
 </style>
 </head>
 <body>
@@ -294,6 +313,15 @@ export function buildDashboardHtml(): string {
   <h1><span class="dot"></span> Custom AI Models</h1>
   <p class="sub">Served by the AnityG-Mod local proxy. Saved models appear in the IDE model picker within a few seconds - no JSON editing needed.</p>
   <div id="status"></div>
+  <div class="toggle-card" id="toggleCard">
+    <div class="t-info">
+      <div class="t-title">⚡ Auto Rotation / Smart Router
+        <span class="t-state on" id="autoState">ON</span>
+      </div>
+      <div class="t-sub">When ON, failed requests automatically rotate to the next model and the "Auto (Smart Router)" entry picks the best model per request. When OFF, requests dial the selected model directly with no rotation.</div>
+    </div>
+    <button id="autoToggle" class="on" aria-live="polite">Turn OFF</button>
+  </div>
   <div id="list"><div class="empty">Loading…</div></div>
 
   <div class="panel">
@@ -373,6 +401,38 @@ export function buildDashboardHtml(): string {
   }
 
   function note(msg, cls) { status.innerHTML = '<span class="' + (cls || '') + '">' + esc(msg) + '</span>'; }
+
+  // ── Auto Rotation / Smart Router master switch ──
+  var autoToggle = document.getElementById('autoToggle');
+  var autoState = document.getElementById('autoState');
+  function renderAutoState(on) {
+    autoToggle.textContent = on ? 'Turn OFF' : 'Turn ON';
+    autoToggle.className = on ? 'on' : 'off';
+    autoState.textContent = on ? 'ON' : 'OFF';
+    autoState.className = 't-state ' + (on ? 'on' : 'off');
+  }
+  function loadAutoState() {
+    fetch('/api/router/status').then(function (r) { return r.json(); }).then(function (s) {
+      renderAutoState(!!s.autoRouter);
+    }).catch(function () { /* leave default ON */ });
+  }
+  autoToggle.addEventListener('click', function () {
+    var turningOn = autoToggle.className === 'off';
+    autoToggle.disabled = true;
+    note(turningOn ? 'Enabling Auto Rotation…' : 'Disabling Auto Rotation…');
+    fetch('/api/router/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: turningOn }) }).then(function (r) { return r.json(); }).then(function (s) {
+        autoToggle.disabled = false;
+        if (s.error) { note('Toggle failed: ' + s.error, 'bad'); return; }
+        renderAutoState(!!s.autoRouter);
+        note('Auto Rotation / Smart Router is now ' + (s.autoRouter ? 'ON' : 'OFF') + '.', s.autoRouter ? 'ok' : 'bad');
+        load();
+      }).catch(function (e) {
+        autoToggle.disabled = false;
+        note('Toggle failed: ' + e.message, 'bad');
+      });
+  });
+  loadAutoState();
 
   list.addEventListener('click', function (ev) {
     var name = ev.target && ev.target.getAttribute ? ev.target.getAttribute('data-name') : null;
