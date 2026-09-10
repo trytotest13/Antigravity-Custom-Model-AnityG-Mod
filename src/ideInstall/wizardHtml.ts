@@ -1,5 +1,5 @@
 /**
- * IDE Install Wizard — HTML template for the wizard UI.
+ * IDE Install Wizard - HTML template for the wizard UI.
  *
  * This is a self-contained page with all CSS/JS embedded, rendered inline
  * in a standalone BrowserWindow.

@@ -13,7 +13,7 @@ Write-Host "==============================================" -ForegroundColor Cya
 Write-Host "Repacking app.asar package..." -ForegroundColor Yellow
 Write-Host "==============================================" -ForegroundColor Cyan
 
-# Define source and destination paths (portable — uses LOCALAPPDATA)
+# Define source and destination paths (portable - uses LOCALAPPDATA)
 $SourceDir = $PSScriptRoot
 $DestAsar = "$env:LOCALAPPDATA\Programs\antigravity\resources\app.asar"
 

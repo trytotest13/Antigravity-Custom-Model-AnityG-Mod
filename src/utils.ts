@@ -160,7 +160,7 @@ export function getNodeWrapperPaths(
   userDataPath: string,
   baseDir: string,
 ): NodeWrapperPaths {
-  const delimiter = os === 'win32' ? ';' : ':';
+  const delimiter = path.delimiter;
   if (!isPackaged) {
     const devBinPath = path.join(baseDir, '..', 'node_modules', '.bin');
     return {

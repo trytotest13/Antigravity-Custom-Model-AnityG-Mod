@@ -28,7 +28,7 @@ export function shouldSwitch(status?: number, err?: Error): SwitchVerdict {
       return { switch: true, retrySame: true, reason: 'server error' };
     if (status === 401 || status === 403) return { switch: true, retrySame: false, reason: 'auth failure' };
     if (status === 404) return { switch: true, retrySame: false, reason: 'model not found' };
-    // 400 and other 4xx are the client's fault — fail fast, don't blame the model.
+    // 400 and other 4xx are the client's fault - fail fast, don't blame the model.
     return { switch: false, retrySame: false, reason: `client error ${status}` };
   }
   return { switch: false, retrySame: false, reason: 'unknown' };

@@ -1,5 +1,5 @@
 /**
- * IDE Install Wizard — Window orchestration and IPC handlers.
+ * IDE Install Wizard - Window orchestration and IPC handlers.
  */
 
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';

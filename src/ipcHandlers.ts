@@ -170,7 +170,7 @@ export function registerIpcHandlers(storageManager: StorageManager): void {
       try {
         await fs.chmod(filePath, 0o600);
       } catch {
-        // non-POSIX (Windows) — ignore
+        // non-POSIX (Windows) - ignore
       }
       return { success: true };
     } catch (err) {
@@ -202,7 +202,7 @@ export function registerIpcHandlers(storageManager: StorageManager): void {
       try {
         await fs.chmod(filePath, 0o600);
       } catch {
-        // non-POSIX (Windows) — ignore
+        // non-POSIX (Windows) - ignore
       }
       return { success: true };
     } catch (err) {
@@ -211,7 +211,7 @@ export function registerIpcHandlers(storageManager: StorageManager): void {
     }
   });
 
-  // P3-17: Test model connectivity — sends a lightweight HEAD/GET to the model endpoint
+  // P3-17: Test model connectivity - sends a lightweight HEAD/GET to the model endpoint
   ipcMain.handle('storage:test-model-connection', async (_event, model: TestModelParams) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const https = require('https');
@@ -307,11 +307,11 @@ export function registerIpcHandlers(storageManager: StorageManager): void {
         req.on('error', (err: NodeJS.ErrnoException) => {
           let message = err.message;
           if (message.includes('ECONNREFUSED')) {
-            message = 'Connection refused — server may not be running';
+            message = 'Connection refused - server may not be running';
           } else if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
-            message = 'Host not found — check the API URL';
+            message = 'Host not found - check the API URL';
           } else if (message.includes('CERT') || message.includes('certificate') || message.includes('SSL')) {
-            message = 'SSL/TLS error — try enabling "allowUnauthorized" for self-signed certs';
+            message = 'SSL/TLS error - try enabling "allowUnauthorized" for self-signed certs';
           }
           resolve({ success: false, error: message });
         });

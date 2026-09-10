@@ -253,7 +253,7 @@ app
       });
     }
 
-    // Initial window — opened once after the LS has successfully started.
+    // Initial window - opened once after the LS has successfully started.
     if (!HEADLESS) {
       setupApplicationMenu(url);
       const mainWindow = createWindow(url);

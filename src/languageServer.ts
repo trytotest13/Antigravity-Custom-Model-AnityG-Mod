@@ -240,7 +240,7 @@ export function startLanguageServer(port: number, csrf: string, headless?: boole
       env: env as Record<string, string>,
     });
     if (!headless) {
-      // Close stdin immediately — the LS may block waiting for metadata on stdin.
+      // Close stdin immediately - the LS may block waiting for metadata on stdin.
       _lsProcess.stdin?.end();
     }
     const combined = new PassThrough();
@@ -299,7 +299,7 @@ export function startLanguageServer(port: number, csrf: string, headless?: boole
         console.log('='.repeat(60) + '\n');
       }
     });
-    // Exit promise — resolves whenever the process exits (whether during
+    // Exit promise - resolves whenever the process exits (whether during
     // startup or after). Includes crash stack trace extraction.
     const exitPromise = new Promise<ExitInfo>((exitResolve) => {
       _lsProcess!.on('exit', (code, signal) => {

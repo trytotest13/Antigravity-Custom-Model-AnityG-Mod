@@ -50,7 +50,7 @@ const WASTE_STEP = 200_000; // 1 point lost per 200k tokens of unused window
 const WASTE_CAP = 10;
 
 // Strong code signals: essentially unambiguous on their own. One pattern per
-// signal — countMatches weighs per pattern, so alternatives must be split out.
+// signal - countMatches weighs per pattern, so alternatives must be split out.
 const CODE_STRONG: RegExp[] = [
   /```/, // fenced code block
   /\btraceback\b/i,

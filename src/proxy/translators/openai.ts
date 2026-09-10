@@ -181,7 +181,7 @@ function mapGeminiToolsToOpenAI(geminiTools: GeminiTool[]): OpenAITool[] {
     if (toolGroup.functionDeclarations && Array.isArray(toolGroup.functionDeclarations)) {
       for (const func of toolGroup.functionDeclarations) {
         const params = func.parameters
-          ? (JSON.parse(JSON.stringify(func.parameters)) as Record<string, unknown>)
+          ? (structuredClone(func.parameters) as unknown as Record<string, unknown>)
           : { type: 'object', properties: {} };
         if (params.type && typeof params.type === 'string') {
           (params as Record<string, string>).type = (params.type as string).toLowerCase();

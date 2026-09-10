@@ -1,35 +1,82 @@
-# Dependency directories
+# ============================
+# Dependencies
+# ============================
 node_modules/
 
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# OS metadata
-.DS_Store
-Thumbs.db
-
-# Build output (tsc -> dist/, compiled preload.js copy)
+# ============================
+# Build Output
+# ============================
 dist/
 preload.js
+*.tsbuildinfo
 
-# Environment / secrets - never commit
+# ============================
+# Environment & Secrets
+# ============================
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.p12
 *.pfx
 
-# Runtime / deploy backups
+# ============================
+# Logs
+# ============================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ============================
+# OS Metadata
+# ============================
+.DS_Store
+Desktop.ini
+Thumbs.db
+ehthumbs.db
+$RECYCLE.BIN/
+*.lnk
+
+# ============================
+# Editor & IDE Config
+# ============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ============================
+# Runtime & Deploy Backups
+# ============================
 *.backup
 *.bak
 *.unpacked/
+*.asar
 
-# Editor / local config
-.vscode/
+# ============================
+# Testing & Coverage
+# ============================
+coverage/
+.nyc_output/
+*.lcov
 
-# Development artifacts
+# ============================
+# Development Artifacts
+# ============================
 scratch/
+tmp/
+temp/
+
+# ============================
+# Package Manager Locks (keep only npm)
+# ============================
+yarn.lock
+pnpm-lock.yaml

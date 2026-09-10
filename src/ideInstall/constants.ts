@@ -1,5 +1,5 @@
 /**
- * IDE Install — Constants, platform helpers, and condition checks.
+ * IDE Install - Constants, platform helpers, and condition checks.
  */
 
 import * as fs from 'fs';
@@ -79,14 +79,14 @@ export async function shouldShowIdeInstallWizard(storageManager: StorageManager)
   await storageManager.updateItems({ [WIZARD_SHOWN_KEY]: 'true' });
   // 2. IDE already installed separately?
   if (fs.existsSync(IDE_NEW_DATA_DIR)) {
-    log.info(`[IDE Wizard] ${IDE_NEW_DATA_DIR} exists — IDE already installed, skipping.`);
+    log.info(`[IDE Wizard] ${IDE_NEW_DATA_DIR} exists - IDE already installed, skipping.`);
     return false;
   }
   // 3. Old IDE data present (user was migrated)?
   if (!fs.existsSync(IDE_OLD_DATA_DIR)) {
-    log.info(`[IDE Wizard] ${IDE_OLD_DATA_DIR} not found — user was not migrated, skipping.`);
+    log.info(`[IDE Wizard] ${IDE_OLD_DATA_DIR} not found - user was not migrated, skipping.`);
     return false;
   }
-  log.info('[IDE Wizard] All conditions met — will show wizard.');
+  log.info('[IDE Wizard] All conditions met - will show wizard.');
   return true;
 }

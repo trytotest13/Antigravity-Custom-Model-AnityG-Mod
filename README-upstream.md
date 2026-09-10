@@ -2,7 +2,7 @@
 
 This repository contains a patch for **Google Antigravity** that enables external AI models (OpenAI, Anthropic, Together API, Ollama, Google AI Studio, and any OpenAI-compatible provider) alongside the built-in Gemini models. It injects a local HTTP proxy into the Electron app, reverse-engineers the Cloud Code internal API (`v1internal`), translates request/response formats between providers, and provides an inline "Add Model" UI in the Settings page.
 
-## Auto (Smart Router) — new in AnityG-Mod
+## Auto (Smart Router) - new in AnityG-Mod
 
 Alongside your configured models, the proxy now injects a virtual **Auto (Smart Router)** model into Antigravity's picker. Select it and every request is classified on the fly: images are routed to a vision-capable model, code to your best code model, huge context to the biggest window that fits, and quick questions to a fast/light model. When a model fails (4xx/5xx, rate limit, timeout), the same request automatically falls back to the next configured model. If no configured window fits the conversation, older turns are compressed locally (system prompt and recent turns stay verbatim) before routing. Force behavior with `#model:<name>`, `#:code`, or `#:vision` tags anywhere in your message.
 
@@ -59,9 +59,9 @@ Antigravity IDE
 #### Deployment Scripts
 | File | Platform |
 |---|---|
-| [deploy.ps1](deploy.ps1) | Windows — stops Antigravity, packs `dist/` into `app.asar`, restarts |
-| [deploy.sh](deploy.sh) | macOS — extracts `app.asar` from `/Applications/`, replaces `dist/`, repacks and relaunches |
-| [deploy_linux.sh](deploy_linux.sh) | Linux — auto-detects installation path across standard Electron app directories |
+| [deploy.ps1](deploy.ps1) | Windows - stops Antigravity, packs `dist/` into `app.asar`, restarts |
+| [deploy.sh](deploy.sh) | macOS - extracts `app.asar` from `/Applications/`, replaces `dist/`, repacks and relaunches |
+| [deploy_linux.sh](deploy_linux.sh) | Linux - auto-detects installation path across standard Electron app directories |
 | [repack.ps1](repack.ps1) | Repacks existing `app.asar` with updated `dist/` files |
 
 > [!NOTE]
@@ -675,7 +675,7 @@ Set `DEBUG=antigravity:*` for verbose logging (debug level captures stream parse
 ## Changelog
 
 ### v2.1.0
-- **TypeScript**: Full migration — all 23 source files converted from JavaScript to TypeScript (`dist/*.js` → `src/*.ts`)
+- **TypeScript**: Full migration - all 23 source files converted from JavaScript to TypeScript (`dist/*.js` → `src/*.ts`)
 - **New Provider**: OpenRouter support (300+ models via unified API, OpenAI-compatible format)
 - **OpenRouter UI**: Provider dropdown, auto-filled URL, connection test, icon & color in Settings modal
 - **Dev Experience**: ESLint + Prettier configured with automated `lint`, `format`, `lint:fix` scripts

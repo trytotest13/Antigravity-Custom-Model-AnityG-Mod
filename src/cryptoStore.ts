@@ -13,7 +13,7 @@ export function backupFile(filePath: string): void {
       try {
         fs.chmodSync(backupPath, 0o600);
       } catch {
-        // non-POSIX (Windows) — ignore
+        // non-POSIX (Windows) - ignore
       }
       console.log(`[CryptoStore] Backup created successfully at: ${backupPath}`);
     }

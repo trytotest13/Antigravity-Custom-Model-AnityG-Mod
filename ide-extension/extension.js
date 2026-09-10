@@ -1,6 +1,6 @@
 'use strict';
 /**
- * AnityG Mod — Model Manager (IDE extension).
+ * AnityG Mod - Model Manager (IDE extension).
  *
  * Bridges the gap the new Antigravity IDE 2.5.x packaging created: the mod is an
  * external proxy, so its add-model UI (the dashboard at /dashboard) never shows up
@@ -173,7 +173,7 @@ async function openDashboard() {
   }
   panel = vscode.window.createWebviewPanel(
     'anitygDashboard',
-    'AnityG — Add / Manage Models',
+    'AnityG - Add / Manage Models',
     vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true }
   );
@@ -206,8 +206,8 @@ async function refreshStatus() {
   setStatus(
     up ? '$(plug)' : '$(debug-disconnect)',
     up
-      ? 'AnityG Mod proxy running — click to add / manage custom models (Ctrl+Alt+M)'
-      : 'AnityG Mod proxy is NOT running — click to try starting it and open the dashboard',
+      ? 'AnityG Mod proxy running - click to add / manage custom models (Ctrl+Alt+M)'
+      : 'AnityG Mod proxy is NOT running - click to try starting it and open the dashboard',
     up
   );
 }
@@ -234,7 +234,7 @@ function activate(context) {
       }
       const up = await waitUntilUp(20000);
       if (up) vscode.window.showInformationMessage('AnityG proxy started at ' + baseUrl());
-      else vscode.window.showErrorMessage('AnityG proxy failed to start — check proxy.err.log in %USERPROFILE%\\.gemini\\antigravity');
+      else vscode.window.showErrorMessage('AnityG proxy failed to start - check proxy.err.log in %USERPROFILE%\\.gemini\\antigravity');
       refreshStatus();
     })
   );

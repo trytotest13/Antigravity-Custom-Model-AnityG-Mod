@@ -9,8 +9,6 @@
  * directly. File persistence stays in proxy.ts (cryptoStore lives there).
  */
 
-import * as http from 'http';
-import * as https from 'https';
 import * as registry from './registry';
 
 // ─── Provider presets ─────────────────────────────────────────────────────
@@ -155,7 +153,7 @@ export interface TestResult {
 }
 
 /** Sends a tiny "ping" generation through the real translator for this provider. */
-export function testModelConnection(input: {
+export async function testModelConnection(input: {
   provider: string;
   apiKey: string;
   apiUrl: string;
@@ -170,54 +168,34 @@ export function testModelConnection(input: {
   const headers = registry.getProviderHeaders(provider, input.apiKey || 'none') as Record<string, string>;
   const urlStr = resolveProviderUrl(provider, input.apiUrl, input.externalModelName, false);
 
-  return new Promise((resolve) => {
-    const started = Date.now();
-    let url: URL;
-    try {
-      url = new URL(urlStr);
-    } catch {
-      resolve({ ok: false, latencyMs: 0, message: 'Invalid URL: ' + urlStr });
-      return;
+  const started = Date.now();
+  try {
+    const res = await fetch(urlStr, {
+      method: 'POST',
+      headers,
+      body: payload,
+      signal: AbortSignal.timeout(20_000),
+    });
+    const latencyMs = Date.now() - started;
+    const body = await res.text();
+    if (res.ok) {
+      let reply = '';
+      try {
+        reply = extractReplyText(provider, JSON.parse(body) as Record<string, unknown>);
+      } catch {
+        /* keep empty reply */
+      }
+      return {
+        ok: true,
+        status: res.status,
+        latencyMs,
+        message: reply ? 'Connected (' + latencyMs + ' ms) - model replied: ' + reply : 'Connected (' + latencyMs + ' ms)',
+      };
     }
-    const client = url.protocol === 'https:' ? https : http;
-    const req = client.request(
-      url,
-      { method: 'POST', headers: { ...headers, 'Content-Length': String(Buffer.byteLength(payload)) } },
-      (res) => {
-        let body = '';
-        res.on('data', (c: Buffer) => (body += c.toString('utf-8')));
-        res.on('end', () => {
-          const latencyMs = Date.now() - started;
-          const status = res.statusCode || 0;
-          if (status >= 200 && status < 300) {
-            let reply = '';
-            try {
-              const parsed = JSON.parse(body) as Record<string, unknown>;
-              reply = extractReplyText(provider, parsed);
-            } catch {
-              /* keep empty reply */
-            }
-            resolve({
-              ok: true,
-              status,
-              latencyMs,
-              message: reply ? 'Connected (' + latencyMs + ' ms) — model replied: ' + reply : 'Connected (' + latencyMs + ' ms)',
-            });
-          } else {
-            resolve({ ok: false, status, latencyMs, message: 'HTTP ' + status + ': ' + extractError(body) });
-          }
-        });
-      },
-    );
-    req.setTimeout(20_000, () => {
-      req.destroy();
-      resolve({ ok: false, latencyMs: Date.now() - started, message: 'Timed out after 20 s' });
-    });
-    req.on('error', (err) => {
-      resolve({ ok: false, latencyMs: Date.now() - started, message: err.message });
-    });
-    req.end(payload);
-  });
+    return { ok: false, status: res.status, latencyMs, message: 'HTTP ' + res.status + ': ' + extractError(body) };
+  } catch (err) {
+    return { ok: false, latencyMs: Date.now() - started, message: (err as Error).message };
+  }
 }
 
 function extractReplyText(provider: string, parsed: Record<string, unknown>): string {
@@ -253,7 +231,7 @@ export function buildDashboardHtml(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AnityG-Mod — Custom Models</title>
+<title>AnityG-Mod - Custom Models</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -279,11 +257,21 @@ export function buildDashboardHtml(): string {
                text-overflow: ellipsis; margin-top: 2px; }
   .card .key { color: #777; font-size: 11px; margin-top: 2px; }
   button { background: #2e2e2e; color: #e8e8e8; border: 1px solid #3d3d3d; border-radius: 8px;
-           padding: 7px 12px; cursor: pointer; font-size: 13px; }
+           padding: 7px 12px; cursor: pointer; font-size: 13px; transition: all .15s ease; }
   button:hover { background: #3a3a3a; }
   button.primary { background: #e8e8e8; color: #141414; border-color: #e8e8e8; font-weight: 600; }
   button.primary:hover { background: #fff; }
   button.danger:hover { background: #7f1d1d; border-color: #b91c1c; }
+  button.reuse { background: #1a2332; color: #60a5fa; border-color: #2563eb44; display: inline-flex;
+                 align-items: center; gap: 6px; font-size: 12px; }
+  button.reuse:hover { background: #1e3a5f; border-color: #3b82f6; }
+  button.reuse svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
+  .test-status { display: inline-block; font-size: 12px; font-weight: 600; padding: 7px 14px;
+                 border-radius: 8px; text-align: center; min-width: 52px; }
+  .test-status.pass { background: #052e16; color: #34d399; border: 1px solid #16a34a44; }
+  .test-status.fail { background: #2a0a0a; color: #f87171; border: 1px solid #dc262644; }
+  .test-status.none { background: transparent; color: transparent; border: none; min-width: 0; padding: 0; }
+  .card .actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
   .empty { text-align: center; color: #777; padding: 32px 0; }
   .panel { background: #1b1b1b; border: 1px solid #2e2e2e; border-radius: 12px; padding: 20px; margin-top: 18px; }
   .panel h2 { margin: 0 0 14px; font-size: 15px; }
@@ -304,7 +292,7 @@ export function buildDashboardHtml(): string {
 <body>
 <div class="wrap">
   <h1><span class="dot"></span> Custom AI Models</h1>
-  <p class="sub">Served by the AnityG-Mod local proxy. Saved models appear in the IDE model picker within a few seconds — no JSON editing needed.</p>
+  <p class="sub">Served by the AnityG-Mod local proxy. Saved models appear in the IDE model picker within a few seconds - no JSON editing needed.</p>
   <div id="status"></div>
   <div id="list"><div class="empty">Loading…</div></div>
 
@@ -326,7 +314,7 @@ export function buildDashboardHtml(): string {
       <button id="saveBtn" class="primary">Save Model</button>
     </div>
     <div id="testResult"></div>
-    <p class="hint">The API URL is prefilled per provider — only change it for gateways or self-hosted endpoints.</p>
+    <p class="hint">The API URL is prefilled per provider - only change it for gateways or self-hosted endpoints.</p>
   </div>
 </div>
 <script>
@@ -342,6 +330,7 @@ export function buildDashboardHtml(): string {
   var list = document.getElementById('list');
   var status = document.getElementById('status');
   var testResult = document.getElementById('testResult');
+  var testStatuses = {};
 
   function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
 
@@ -357,17 +346,26 @@ export function buildDashboardHtml(): string {
   function load() {
     fetch('/api/models').then(function (r) { return r.json(); }).then(function (data) {
       if (!data.models || !data.models.length) {
-        list.innerHTML = '<div class="empty">No models yet — add your first one below.</div>';
+        list.innerHTML = '<div class="empty">No models yet - add your first one below.</div>';
         return;
       }
       list.innerHTML = data.models.map(function (m) {
+        var ts = testStatuses[m.name];
+        var statusHtml = '';
+        if (ts === 'pass') statusHtml = '<span class="test-status pass">Pass</span>';
+        else if (ts === 'fail') statusHtml = '<span class="test-status fail">Fail</span>';
+        else statusHtml = '<span class="test-status none"></span>';
         return '<div class="card" data-name="' + esc(m.name) + '">' +
           '<div class="info"><div class="name"><span class="dot" style="width:7px;height:7px;border-radius:50%;background:#22c55e"></span>' +
           esc(m.displayName) + ' <span class="badge ' + esc(m.provider) + '">' + esc(m.provider) + '</span></div>' +
           '<div class="url">' + esc(m.apiUrl) + '</div>' +
           '<div class="key">' + esc(m.externalModelName) + (m.keyMasked ? ' · key ' + esc(m.keyMasked) : '') + '</div></div>' +
+          '<div class="actions">' +
+          '<button class="reuse r" data-name="' + esc(m.name) + '" data-provider="' + esc(m.provider) + '" data-url="' + esc(m.apiUrl) + '" data-extname="' + esc(m.externalModelName) + '" data-display="' + esc(m.displayName) + '"><svg viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>Reuse Info</button>' +
           '<button class="t" data-name="' + esc(m.name) + '">Test</button>' +
-          '<button class="danger d" data-name="' + esc(m.name) + '">Delete</button></div>';
+          statusHtml +
+          '<button class="danger d" data-name="' + esc(m.name) + '">Delete</button>' +
+          '</div></div>';
       }).join('');
     }).catch(function (e) {
       list.innerHTML = '<div class="empty bad">Failed to load: ' + esc(e.message) + '</div>';
@@ -391,8 +389,38 @@ export function buildDashboardHtml(): string {
       note('Testing ' + name + '…');
       fetch('/api/models/test', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name }) }).then(function (r) { return r.json(); }).then(function (res) {
+          testStatuses[name] = res.ok ? 'pass' : 'fail';
           note(name + ': ' + res.message, res.ok ? 'ok' : 'bad');
+          load();
         });
+    } else if (ev.target.classList.contains('r') || (ev.target.parentElement && ev.target.parentElement.classList.contains('r'))) {
+       var btn = ev.target.classList.contains('r') ? ev.target : ev.target.parentElement;
+       var p = btn.getAttribute('data-provider') || 'custom';
+       var u = btn.getAttribute('data-url') || '';
+       var ext = btn.getAttribute('data-extname') || '';
+       var disp = btn.getAttribute('data-display') || '';
+       var modelName = btn.getAttribute('data-name') || '';
+       provider.value = p;
+       applyProvider();
+       idEl.value = ext;
+       nameEl.value = disp;
+       urlEl.value = u;
+       keyEl.value = '';
+       document.querySelector('.panel').scrollIntoView({ behavior: 'smooth' });
+       note('Loading API key for "' + disp + '"…', 'ok');
+       fetch('/api/models/key', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ name: modelName }) }).then(function (r) { return r.json(); }).then(function (res) {
+           if (res.apiKey) {
+             keyEl.value = res.apiKey;
+             note('Pre-filled form with all info from "' + disp + '" - ready to save.', 'ok');
+           } else {
+             keyEl.focus();
+             note('Pre-filled form from "' + disp + '" - enter your API key and save.', 'ok');
+           }
+         }).catch(function () {
+           keyEl.focus();
+           note('Pre-filled form from "' + disp + '" - could not fetch key, enter it manually.', 'ok');
+         });
     }
   });
 
@@ -412,7 +440,7 @@ export function buildDashboardHtml(): string {
       body: JSON.stringify({ provider: provider.value, id: idEl.value, apiKey: keyEl.value, apiUrl: urlEl.value,
         displayName: nameEl.value }) }).then(function (r) { return r.json(); }).then(function (res) {
         if (res.error) { note(res.error, 'bad'); return; }
-        note('Saved "' + res.saved + '" — it appears in the IDE picker within a few seconds.');
+        note('Saved "' + res.saved + '" - it appears in the IDE picker within a few seconds.');
         idEl.value = ''; nameEl.value = ''; keyEl.value = '';
         testResult.innerHTML = '';
         load();

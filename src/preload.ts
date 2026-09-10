@@ -1,5 +1,5 @@
 /**
- * Preload script — runs in every BrowserWindow before the page loads.
+ * Preload script - runs in every BrowserWindow before the page loads.
  * Exposes a minimal, secure API via contextBridge so the renderer can
  * communicate with the main-process auto-updater without nodeIntegration.
  */
@@ -1061,7 +1061,7 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Efficient DOM tracking via MutationObserver — instead of setInterval
+  // Efficient DOM tracking via MutationObserver - instead of setInterval
   let injectionObserver: MutationObserver | null = null;
   let injectionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1100,7 +1100,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const currentUrl = location.href;
     if (currentUrl !== lastUrl) {
       lastUrl = currentUrl;
-      // Page changed — clean up previous observer and re-initialize
+      // Page changed - clean up previous observer and re-initialize
       if (injectionObserver) {
         injectionObserver.disconnect();
         injectionObserver = null;
@@ -1129,7 +1129,7 @@ window.addEventListener('DOMContentLoaded', () => {
     return customModelsCache.models;
   }
 
-  // ponytail: shared slug/placeholder helpers — provider prefix avoids collisions between same model id on different providers
+  // ponytail: shared slug/placeholder helpers - provider prefix avoids collisions between same model id on different providers
   function agySlug(m: any): string {
     if ((m.externalModelName || '') === 'auto-router') return 'custom-auto-router';
     const base = ((m.externalModelName || m.name || '') as string)

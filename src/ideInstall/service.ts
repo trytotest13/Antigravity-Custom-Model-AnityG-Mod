@@ -1,5 +1,5 @@
 /**
- * IDE Install Service — Download, extract, copy, and launch logic.
+ * IDE Install Service - Download, extract, copy, and launch logic.
  */
 
 import * as fs from 'fs';

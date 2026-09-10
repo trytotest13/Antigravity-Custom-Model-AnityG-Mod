@@ -8,6 +8,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { app } from 'electron';
 import log from 'electron-log';
 
@@ -254,7 +255,7 @@ function loadCustomModels(): CustomModel[] {
       try {
         fs.chmodSync(filePath, 0o600);
       } catch {
-        // non-POSIX (Windows) — ignore
+        // non-POSIX (Windows) - ignore
       }
     } catch (e) {
       log.error('[Proxy] Failed to write default custom_models.json', e);
@@ -285,7 +286,7 @@ function loadCustomModels(): CustomModel[] {
         try {
           fs.chmodSync(filePath, 0o600);
         } catch {
-          // non-POSIX (Windows) — ignore
+          // non-POSIX (Windows) - ignore
         }
         log.info('[Proxy] Successfully migrated custom_models.json to encrypted format.');
         return cryptoStore.decryptModels(encryptedModels);
@@ -438,7 +439,7 @@ async function resolveFileData(body: GeminiRequestBody, reqHeaders: Record<strin
       try {
         const uri = fd.fileUri; let fileContent = '';
         if (uri.startsWith('file://')) {
-          const fp = uri.replace('file://', '').replace(/\//g, path.sep);
+          const fp = fileURLToPath(uri);
           if (fs.existsSync(fp)) fileContent = fs.readFileSync(fp, 'utf-8');
         } else if (authHeader && uri.startsWith('https://')) {
           fileContent = await downloadFileContent(uri, authHeader);
@@ -451,17 +452,13 @@ async function resolveFileData(body: GeminiRequestBody, reqHeaders: Record<strin
   }
 }
 
-function downloadFileContent(url: string, authHeader: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url);
-    (u.protocol === 'https:' ? https : http).request({
-      hostname: u.hostname, path: u.pathname + u.search,
-      method: 'GET', headers: { 'Authorization': authHeader }, timeout: 30000,
-    }, (res) => {
-      if (res.statusCode !== 200) { reject(new Error('HTTP ' + res.statusCode)); return; }
-      let d = ''; res.on('data', (c: Buffer) => d += c.toString()); res.on('end', () => resolve(d));
-    }).on('error', reject).end();
+async function downloadFileContent(url: string, authHeader: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: { 'Authorization': authHeader },
+    signal: AbortSignal.timeout(30000),
   });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.text();
 }
 
 // ─── Custom Model Request Handler ─────────────────────────────────────────
@@ -601,7 +598,7 @@ function handleCustomModelRequest(
         apiRes.on('end', () => {
           log.error(`[Proxy] Stream API error (${apiRes.statusCode}) for ${model.name}: ${errorBody.substring(0, 300)}`);
           smartHealth.reportFailure(model.name);
-          // 4xx client errors are not retryable on the same model — fall through to next model.
+          // 4xx client errors are not retryable on the same model - fall through to next model.
           if (retryCount < MAX_RETRIES && shouldSwitch(apiRes.statusCode).retrySame) {
             log.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
             setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1, fallbacks), 1000 * (retryCount + 1));
@@ -1128,7 +1125,7 @@ function handleDashboardRoute(
   body: string,
 ): boolean {
   const url = req.url!.split('?')[0];
-  if (url !== '/dashboard' && url !== '/api/models' && url !== '/api/models/delete' && url !== '/api/models/test') {
+  if (url !== '/dashboard' && url !== '/api/models' && url !== '/api/models/delete' && url !== '/api/models/test' && url !== '/api/models/key') {
     return false;
   }
 
@@ -1191,6 +1188,17 @@ function handleDashboardRoute(
       }
       log.info(`[Dashboard] Deleted model "${name}"`);
       json(200, { deleted: name });
+      return true;
+    }
+
+    if (req.method === 'POST' && url === '/api/models/key') {
+      const name = String(parsed.name || '');
+      const saved = name ? loadCustomModels().find((m) => m.name === name) : undefined;
+      if (!saved) {
+        json(404, { error: `No model named "${name}".` });
+        return true;
+      }
+      json(200, { apiKey: saved.apiKey || '' });
       return true;
     }
 
